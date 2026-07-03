@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 2% 11%;
+    --foreground: 0 0% 100%;
+    --muted: 240 2% 17%;
+    --muted-foreground: 240 2% 69%;
+    --accent: 240 2% 23%;
+    --accent-foreground: 0 0% 100%;
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 2% 23%;
+    --secondary-foreground: 0 0% 100%;
+    --destructive: 3 78% 53%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 1% 29%;
+    --input: 240 1% 29%;
+    --ring: 211 100% 50%;
+  }
+
+  .dark {
+    --background: 224 16% 11%;
+    --foreground: 220 18% 94%;
+    --muted: 224 12% 18%;
+    --muted-foreground: 220 10% 68%;
+    --accent: 224 12% 21%;
+    --accent-foreground: 220 18% 94%;
+    --primary: 211 100% 56%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 224 12% 20%;
+    --secondary-foreground: 220 18% 94%;
+    --destructive: 3 78% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 224 11% 27%;
+    --input: 224 11% 27%;
+    --ring: 211 100% 56%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display",
+      "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  select,
+  input {
+    color-scheme: dark;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+}

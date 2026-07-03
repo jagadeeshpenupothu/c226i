@@ -1,0 +1,25 @@
+[package]
+name = "printpilot"
+version = "0.1.0"
+description = "PrintPilot for macOS"
+authors = ["PrintPilot"]
+edition = "2021"
+
+[lib]
+name = "printpilot_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+thiserror = "1"
+time = "=0.3.44"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"

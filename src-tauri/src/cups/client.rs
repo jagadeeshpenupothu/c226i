@@ -7,8 +7,12 @@ pub enum CupsError {
     NoPrinters,
     #[error("Unable to read printer capabilities.")]
     CapabilitiesUnavailable,
-    #[error("Printer offline.")]
+    #[error("Printer is offline or unavailable.")]
     PrinterUnavailable,
+    #[error("Permission denied by the print system.")]
+    PermissionDenied,
+    #[error("The printer rejected these settings (unsupported paper, media, or option).")]
+    MediaUnsupported,
     #[error("Printing could not be completed.")]
     CommandFailed,
 }
@@ -21,13 +25,37 @@ pub fn run_cups_command(program: &str, args: &[&str]) -> Result<String, CupsErro
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-        if stderr.contains("offline") || stderr.contains("not available") {
-            return Err(CupsError::PrinterUnavailable);
-        }
-        return Err(CupsError::CommandFailed);
+        return Err(classify_cups_failure(&stderr));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Maps a failed CUPS command's stderr to a specific, user-facing error so the
+/// UI can show why a job failed instead of a blanket "printing failed".
+fn classify_cups_failure(stderr: &str) -> CupsError {
+    if stderr.contains("offline")
+        || stderr.contains("not available")
+        || stderr.contains("not connected")
+        || stderr.contains("unreachable")
+    {
+        CupsError::PrinterUnavailable
+    } else if stderr.contains("permission")
+        || stderr.contains("denied")
+        || stderr.contains("not permitted")
+        || stderr.contains("forbidden")
+    {
+        CupsError::PermissionDenied
+    } else if stderr.contains("unsupported")
+        || stderr.contains("unknown option")
+        || stderr.contains("bad option")
+        || stderr.contains("not supported")
+        || stderr.contains("media")
+    {
+        CupsError::MediaUnsupported
+    } else {
+        CupsError::CommandFailed
+    }
 }
 
 pub fn printer_status_lines() -> Result<String, CupsError> {

@@ -23,8 +23,6 @@ pub fn build_capabilities(printer_id: &str, options: &DriverOptions) -> PrinterC
         ],
     );
 
-    log_capabilities(printer_id, &trays, &paper_types, !duplex_modes.is_empty());
-
     let mut driver_options = options.values().cloned().collect::<Vec<_>>();
     driver_options.sort_by(|left, right| left.keyword.cmp(&right.keyword));
 
@@ -95,19 +93,6 @@ fn friendly_label(label: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn log_capabilities(
-    printer_id: &str,
-    trays: &[CapabilityChoice],
-    paper_types: &[CapabilityChoice],
-    duplex_supported: bool,
-) {
-    println!("Capabilities loaded");
-    println!("Printer: {printer_id}");
-    println!("Tray count: {}", trays.len());
-    println!("Media types: {}", paper_types.len());
-    println!("Duplex supported: {duplex_supported}");
 }
 
 #[cfg(test)]

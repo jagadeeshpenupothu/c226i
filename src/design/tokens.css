@@ -1,0 +1,144 @@
+/* PrintPilot design tokens — CSS custom properties.
+ *
+ * Source of truth for token VALUES consumed by the DOM and by tailwind.config
+ * (which maps `--pp-*` vars to utilities like `bg-surface`). The dark theme lives
+ * on :root and is what ships today; the light theme is prepared under
+ * [data-theme="light"] but is not activated in Phase 1.
+ *
+ * These variables are ADDITIVE — the legacy --background/--primary/etc. variables
+ * in styles.css are left untouched so the current UI renders identically. */
+
+:root {
+  /* Fonts */
+  --pp-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --pp-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Backgrounds */
+  --pp-color-bg-app: #101113;
+  --pp-color-surface: #1c1d20;
+  --pp-color-elevated: #26272b;
+  --pp-color-card: #1c1d20;
+  --pp-color-sidebar: #18191c;
+  --pp-color-preview: #1c1c1e;
+
+  /* Text */
+  --pp-color-text-primary: #f4f5f7;
+  --pp-color-text-secondary: #c4c5ca;
+  --pp-color-text-muted: #8a8c92;
+  --pp-color-text-disabled: #6b6d73;
+
+  /* Brand */
+  --pp-color-primary: #0a84ff;
+  --pp-color-primary-hover: #2a94ff;
+  --pp-color-primary-active: #0069d9;
+  --pp-color-on-primary: #ffffff;
+
+  /* Semantic */
+  --pp-color-success: #32d74b;
+  --pp-color-warning: #ff9f0a;
+  --pp-color-error: #ff453a;
+  --pp-color-info: #64d2ff;
+
+  /* Soft tints — pre-mixed so components never rely on opacity modifiers over
+   * CSS-variable colors (which Tailwind cannot compute). */
+  --pp-color-primary-soft: rgba(10, 132, 255, 0.16);
+  --pp-color-success-soft: rgba(50, 215, 75, 0.16);
+  --pp-color-warning-soft: rgba(255, 159, 10, 0.16);
+  --pp-color-error-soft: rgba(255, 69, 58, 0.16);
+  --pp-color-info-soft: rgba(100, 210, 255, 0.16);
+
+  /* Borders */
+  --pp-color-border: #3a3a3c;
+  --pp-color-border-subtle: rgba(255, 255, 255, 0.08);
+  --pp-color-border-strong: #48484a;
+
+  /* Elevation */
+  --pp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --pp-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --pp-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --pp-shadow-floating: 0 18px 44px rgba(0, 0, 0, 0.42);
+  --pp-shadow-dialog: 0 24px 80px rgba(0, 0, 0, 0.5);
+
+  /* Focus ring color (mirrors brand primary) */
+  --pp-ring: #0a84ff;
+}
+
+/* Light theme — infrastructure only; activated by stamping data-theme="light". */
+:root[data-theme="light"] {
+  --pp-color-bg-app: #f2f3f5;
+  --pp-color-surface: #ffffff;
+  --pp-color-elevated: #ffffff;
+  --pp-color-card: #ffffff;
+  --pp-color-sidebar: #f7f8fa;
+  --pp-color-preview: #e9eaec;
+
+  --pp-color-text-primary: #1a1b1e;
+  --pp-color-text-secondary: #3f4147;
+  --pp-color-text-muted: #6b6d73;
+  --pp-color-text-disabled: #a6a8ae;
+
+  --pp-color-primary: #0a84ff;
+  --pp-color-primary-hover: #2a94ff;
+  --pp-color-primary-active: #0069d9;
+  --pp-color-on-primary: #ffffff;
+
+  --pp-color-success: #28b33f;
+  --pp-color-warning: #d98600;
+  --pp-color-error: #e5372d;
+  --pp-color-info: #38bdf8;
+
+  --pp-color-primary-soft: rgba(10, 132, 255, 0.12);
+  --pp-color-success-soft: rgba(40, 179, 63, 0.14);
+  --pp-color-warning-soft: rgba(217, 134, 0, 0.14);
+  --pp-color-error-soft: rgba(229, 55, 45, 0.14);
+  --pp-color-info-soft: rgba(56, 189, 248, 0.16);
+
+  --pp-color-border: #d8dadf;
+  --pp-color-border-subtle: rgba(0, 0, 0, 0.08);
+  --pp-color-border-strong: #bfc2c8;
+
+  --pp-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --pp-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --pp-shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.12);
+  --pp-shadow-floating: 0 18px 44px rgba(15, 23, 42, 0.14);
+  --pp-shadow-dialog: 0 24px 80px rgba(15, 23, 42, 0.18);
+}
+
+/* --- Premium global styling ------------------------------------------------ */
+
+/* Thin, unobtrusive scrollbars that match the dark surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.28);
+}
+
+/* Branded text selection. */
+::selection {
+  background-color: color-mix(in srgb, var(--pp-color-primary) 35%, transparent);
+  color: var(--pp-color-text-primary);
+}
+
+/* Accessible focus fallback. Elements that opt out with Tailwind's `outline-none`
+ * (which sets a transparent 2px outline) are unaffected, so existing focus rings
+ * keep working — this only helps controls that had no focus styling at all. */
+:focus-visible {
+  outline: 2px solid var(--pp-ring);
+  outline-offset: 2px;
+}

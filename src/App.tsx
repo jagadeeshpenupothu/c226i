@@ -3,18 +3,35 @@ import type { CSSProperties } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { FileText, FileUp, History, RefreshCw, X } from "lucide-react";
+import { Bookmark, Clock, FileText, FileUp, History, ListChecks, Printer, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { AppCard, Button as DSButton, Divider, Icon, IconButton, SearchBox, StatusIndicator, typography } from "@/design";
 import { PdfPreview } from "@/features/pdf/pdfPreview";
 import type { PdfFile } from "@/features/pdf/types";
-import { getPrinterCapabilities, listPrinters } from "@/features/printers/api";
-import type { CapabilityChoice, PrinterCapabilities, PrinterInfo } from "@/features/printers/types";
-import { submitPrintJob } from "@/features/settings/api";
+import { jobManager, useActiveJobCount, JobsDialog } from "@/features/jobs";
+import { printerManager, usePrinters, usePrinterCapabilities, usePrinterDiscovery, startNotificationWatchers, notify, PrinterDashboard, NotificationCenter } from "@/features/printers";
+import { toastManager, ToastViewport } from "@/features/notifications";
+import { bootstrapCloud, AccountMenu } from "@/features/cloud";
+import { profileManager, ProfileLibrary, CompatibilityWarningsDialog, type PrintProfile, type CompatibilityWarning, type ProfileCapabilitySnapshot } from "@/features/profiles";
+import type { CapabilityChoice, PrinterCapabilities } from "@/features/printers/types";
 import { SettingsPanel } from "@/features/settings/settingsPanel";
 import type { PrintSettings } from "@/features/settings/types";
+import { defaultPrintLayout, normalizePrintLayout, type PrintLayout } from "@/features/layout/types";
 import { isTauriRuntime } from "@/lib/tauri";
+import { FALLBACK_PAPER_CHOICES } from "@/services/layout/paper";
+import { readPdfFileMetadata } from "@/services/pdf/pdfMetadata";
 import { resolvePrintPaperPreview } from "@/services/pdf/printPreview";
+
+const STORAGE = {
+  recent: "printpilot.recent",
+  profiles: "printpilot.profiles",
+  settings: "printpilot.settings",
+  layout: "printpilot.layout",
+  history: "printpilot.history",
+  split: "printpilot.split"
+} as const;
+
+const MAX_RECENT = 20;
 
 const initialSettings: PrintSettings = {
   printerId: "",
@@ -40,6 +57,13 @@ interface PrintHistoryItem {
   status: HistoryStatus;
 }
 
+interface RecentFile {
+  path: string;
+  name: string;
+  openedAt: string;
+}
+
+
 function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || "Document.pdf";
 }
@@ -53,10 +77,33 @@ function pdfFromPath(path: string): PdfFile {
 }
 
 function friendlyError(error: unknown) {
-  const message = String(error);
-  if (message.toLowerCase().includes("offline")) return "Printer offline.";
-  if (message.toLowerCase().includes("media")) return "Unsupported media.";
-  if (message.toLowerCase().includes("paper")) return "Paper mismatch.";
+  const message = String(error).trim();
+  const lower = message.toLowerCase();
+
+  if (lower.includes("no printer") || lower.includes("not found") || lower.includes("no destinations")) {
+    return "No printer connected. Connect a printer and click Refresh.";
+  }
+  if (lower.includes("cups") || lower.includes("connection refused") || lower.includes("cups.sock") || lower.includes("scheduler")) {
+    return "The printing system (CUPS) isn't reachable. Make sure it is running, then try again.";
+  }
+  if (lower.includes("network") || lower.includes("unreachable") || lower.includes("timed out") || lower.includes("host") || lower.includes("no route")) {
+    return "The printer couldn't be reached over the network. Check that it is powered on and connected.";
+  }
+  if (lower.includes("offline") || lower.includes("unavailable")) return "Printer is offline or unavailable.";
+  if (lower.includes("permission") || lower.includes("denied") || lower.includes("not authorized")) {
+    return "Permission denied by the print system.";
+  }
+  if (lower.includes("page range") || lower.includes("invalid page")) return "Invalid page range.";
+  if ((lower.includes("driver") || lower.includes("ppd") || lower.includes("filter")) && (lower.includes("missing") || lower.includes("no such") || lower.includes("fail"))) {
+    return "The printer driver appears to be missing or misconfigured.";
+  }
+  if (lower.includes("unsupported") || lower.includes("media") || lower.includes("paper")) {
+    return "The selected paper, media, or option is not supported by this printer.";
+  }
+  if (lower.includes("driver") && lower.includes("reject")) return "The printer driver rejected the job.";
+
+  // Surface a clean, specific message from the backend rather than genericizing it.
+  if (message && message !== "undefined" && message.length <= 200) return message;
   return "Printing could not be completed. Please check the printer and try again.";
 }
 
@@ -85,68 +132,98 @@ function applyCapabilityDefaults(settings: PrintSettings, capabilities: PrinterC
   };
 }
 
-function readStoredHistory() {
+function readStoredHistory(): PrintHistoryItem[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem("printpilot.history") || "[]") as PrintHistoryItem[];
+    const parsed = JSON.parse(localStorage.getItem(STORAGE.history) || "[]");
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
-function recentFilesToHistory(paths: string[], currentFile: PdfFile | null, printerName: string, paperSize: string, copies: number) {
-  const candidates = currentFile?.path ? [currentFile.path, ...paths.filter((path) => path !== currentFile.path)] : paths;
+// Reads the recent-files list, migrating the legacy `string[]` (paths only) shape.
+function readRecentFiles(): RecentFile[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE.recent) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) =>
+        typeof entry === "string"
+          ? { path: entry, name: fileNameFromPath(entry), openedAt: "" }
+          : entry && typeof entry.path === "string"
+            ? { path: entry.path, name: entry.name || fileNameFromPath(entry.path), openedAt: entry.openedAt || "" }
+            : null
+      )
+      .filter((entry): entry is RecentFile => entry !== null)
+      .slice(0, MAX_RECENT);
+  } catch {
+    return [];
+  }
+}
 
-  return candidates.slice(0, 5).map((path, index) => ({
-    id: `recent-${index}-${path}`,
-    fileName: fileNameFromPath(path),
-    path,
-    printedAt: new Date(Date.now() - index * 36 * 60 * 60 * 1000).toISOString(),
-    printerName,
-    paperSize,
-    copies,
-    status: index % 4 === 3 ? "Failed" : "Completed"
-  })) satisfies PrintHistoryItem[];
+function persistRecentFiles(files: RecentFile[]) {
+  localStorage.setItem(STORAGE.recent, JSON.stringify(files));
+}
+
+function readStoredSettings(): PrintSettings {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE.settings) || "null");
+    if (parsed && typeof parsed === "object") {
+      return { ...initialSettings, ...parsed };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return initialSettings;
+}
+
+// Restores the print layout from the previous session, healing any partial or
+// legacy shape against the defaults.
+function readStoredLayout(): PrintLayout {
+  try {
+    return normalizePrintLayout(JSON.parse(localStorage.getItem(STORAGE.layout) || "null"));
+  } catch {
+    return { ...defaultPrintLayout };
+  }
 }
 
 export default function App() {
   const splitRef = useRef<HTMLElement | null>(null);
+  const currentPathRef = useRef<string | null>(null);
   const [pdfFile, setPdfFile] = useState<PdfFile | null>(null);
-  const [printers, setPrinters] = useState<PrinterInfo[]>([]);
-  const [capabilities, setCapabilities] = useState<PrinterCapabilities | null>(null);
-  const [settings, setSettings] = useState<PrintSettings>(initialSettings);
-  const [status, setStatus] = useState<string | null>(null);
-  const [recentFiles, setRecentFiles] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("printpilot.recent") || "[]") as string[];
-    } catch {
-      return [];
-    }
-  });
-  const [isLoadingPrinters, setIsLoadingPrinters] = useState(false);
-  const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
+  // Printer domain — the PrinterStore/Manager are the single source of truth.
+  const printers = usePrinters();
+  const [settings, setSettings] = useState<PrintSettings>(readStoredSettings);
+  const capabilities = usePrinterCapabilities(settings.printerId);
+  const { discovering: isLoadingPrinters, capabilitiesLoadingId } = usePrinterDiscovery();
+  const isLoadingCapabilities = capabilitiesLoadingId === settings.printerId;
+  const [layout, setLayout] = useState<PrintLayout>(readStoredLayout);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>(readRecentFiles);
   const [isPrinting, setIsPrinting] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isRecentOpen, setIsRecentOpen] = useState(false);
+  const [isProfilesOpen, setIsProfilesOpen] = useState(false);
+  const [profileWarnings, setProfileWarnings] = useState<{ profileName: string; warnings: CompatibilityWarning[] } | null>(null);
+  const [isJobsOpen, setIsJobsOpen] = useState(false);
+  // Which job the Jobs dialog should focus — set when a job toast is clicked.
+  const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
+  const [isPrinterDashboardOpen, setIsPrinterDashboardOpen] = useState(false);
+  const activeJobCount = useActiveJobCount();
+  const [isDragging, setIsDragging] = useState(false);
+  const [pendingReplacePath, setPendingReplacePath] = useState<string | null>(null);
   const [printHistory, setPrintHistory] = useState<PrintHistoryItem[]>(readStoredHistory);
   const [leftPanelPercent, setLeftPanelPercent] = useState(() => {
-    const saved = Number(localStorage.getItem("printpilot.split"));
-    return Number.isFinite(saved) && saved >= 58 && saved <= 74 ? saved : 67;
+    const saved = Number(localStorage.getItem(STORAGE.split));
+    return Number.isFinite(saved) && saved >= 58 && saved <= 74 ? saved : 70;
   });
+  // Loaded document's page count, surfaced by the preview for the header readout.
+  const [documentPageCount, setDocumentPageCount] = useState(0);
   const selectedPrinter = printers.find((printer) => printer.id === settings.printerId);
-  const printPaperPreview = resolvePrintPaperPreview(settings, capabilities?.paperSizes);
-  const historyItems = useMemo(
-    () =>
-      printHistory.length
-        ? printHistory
-        : recentFilesToHistory(
-            recentFiles,
-            pdfFile,
-            selectedPrinter?.name || settings.printerId || "Not selected",
-            printPaperPreview?.label || settings.paperSize || "Default",
-            settings.copies || 1
-          ),
-    [pdfFile, printHistory, printPaperPreview?.label, recentFiles, selectedPrinter?.name, settings.copies, settings.paperSize, settings.printerId]
-  );
+  const hasPrinter = printers.length > 0;
+  // A printer's reported media list when available; a built-in standard list
+  // otherwise, so paper size / preview stay usable with no printer connected.
+  const paperChoices = capabilities?.paperSizes?.length ? capabilities.paperSizes : FALLBACK_PAPER_CHOICES;
+  const printPaperPreview = resolvePrintPaperPreview(settings, paperChoices);
   const canPrint = Boolean(
     pdfFile?.path &&
       settings.printerId &&
@@ -155,87 +232,202 @@ export default function App() {
       !isLoadingCapabilities &&
       !isPrinting
   );
+  const printDisabledReason = useMemo(() => {
+    if (isPrinting) return "Sending your document to the printer…";
+    if (!pdfFile?.path) return "Open a PDF to enable printing.";
+    if (!hasPrinter) return "Connect a printer to print — everything else is ready.";
+    if (!settings.printerId) return "Select a printer to print.";
+    if (selectedPrinter?.status === "offline") return "The selected printer is offline.";
+    if (isLoadingCapabilities) return "Reading printer capabilities…";
+    if (!capabilities) return "Printer capabilities are unavailable.";
+    return null;
+  }, [capabilities, hasPrinter, isLoadingCapabilities, isPrinting, pdfFile?.path, selectedPrinter?.status, settings.printerId]);
 
-  const loadPrinters = useCallback(async () => {
-    setIsLoadingPrinters(true);
+  // Keep the latest values available to the global keyboard-shortcut listener
+  // without re-subscribing on every render.
+  const shortcutRef = useRef({ browse: () => {}, print: () => {}, canPrint: false });
+
+  useEffect(() => {
+    currentPathRef.current = pdfFile?.path ?? null;
+  }, [pdfFile]);
+
+  // Remember the last session's printer + settings.
+  useEffect(() => {
+    localStorage.setItem(STORAGE.settings, JSON.stringify(settings));
+  }, [settings]);
+
+  // Persist the print layout so refreshing printers (or reopening the app)
+  // preserves orientation, scaling, margins, and paper choice.
+  useEffect(() => {
+    localStorage.setItem(STORAGE.layout, JSON.stringify(layout));
+  }, [layout]);
+
+  // With no printer to reconcile against, keep paper size valid against the
+  // built-in fallback list so the preview always has a sheet to simulate.
+  useEffect(() => {
+    if (capabilities) return;
+    setSettings((current) =>
+      paperChoices.some((choice) => choice.value === current.paperSize)
+        ? current
+        : { ...current, paperSize: defaultChoice(paperChoices) }
+    );
+  }, [capabilities, paperChoices]);
+
+  // Re-runs printer discovery without disturbing the document, layout, zoom,
+  // profiles, or history. `announce` shows a short confirmation for the manual
+  // Refresh action; the initial load stays silent.
+  const loadPrinters = useCallback(async (announce = false) => {
     try {
-      const detectedPrinters = await listPrinters();
-      setPrinters(detectedPrinters);
-      setSettings((current) => ({
-        ...current,
-        printerId:
-          detectedPrinters.find((printer) => printer.id === current.printerId)?.id ||
-          detectedPrinters.find((printer) => printer.isDefault)?.id ||
-          detectedPrinters[0]?.id ||
-          ""
-      }));
-      setStatus(detectedPrinters.length ? null : "No printers detected.");
+      const detected = await printerManager.discover();
+      if (announce) {
+        notify(
+          detected.length
+            ? { type: "info", severity: "success", title: "Printers refreshed", message: `${detected.length} printer${detected.length > 1 ? "s" : ""} available.` }
+            : { type: "info", severity: "warning", title: "No printers found", message: "Connect a printer and click Refresh." }
+        );
+      }
     } catch {
-      setPrinters([]);
-      setCapabilities(null);
-      setStatus("No printers detected.");
-    } finally {
-      setIsLoadingPrinters(false);
+      if (announce) notify({ type: "info", severity: "error", title: "Print system unavailable", message: "Could not reach the printing system. Is CUPS running?" });
     }
   }, []);
 
+  // Start live printer monitoring (5s polling), the job→notification bridge, and
+  // the toast layer on mount; stop polling on unmount.
   useEffect(() => {
-    loadPrinters();
-  }, [loadPrinters]);
+    startNotificationWatchers();
+    toastManager.start();
+    printerManager.startPolling();
+    return () => printerManager.stopPolling();
+  }, []);
 
+  // Cloud composition root. App.tsx stays completely Firebase-unaware — the
+  // bootstrap reads config, constructs + registers the provider, and initializes
+  // the CloudManager, returning a cleanup function. With no config it runs fully
+  // local/offline, so existing behavior is untouched.
   useEffect(() => {
-    if (!settings.printerId) {
-      setCapabilities(null);
-      return;
-    }
+    const dispose = bootstrapCloud();
+    return dispose;
+  }, []);
 
-    let cancelled = false;
+  // Keep the selected printer valid as the discovered list changes.
+  useEffect(() => {
+    if (printers.length === 0) return;
+    setSettings((current) => {
+      if (printers.some((printer) => printer.id === current.printerId)) return current;
+      const next = printers.find((printer) => printer.isDefault)?.id || printers[0]?.id || "";
+      return next === current.printerId ? current : { ...current, printerId: next };
+    });
+  }, [printers]);
 
-    async function loadCapabilities() {
-      setIsLoadingCapabilities(true);
-      try {
-        const nextCapabilities = await getPrinterCapabilities(settings.printerId);
-        if (cancelled) return;
+  // Selecting a printer loads its capabilities into the store (via the manager,
+  // the only printer-API caller).
+  useEffect(() => {
+    if (!settings.printerId) return;
+    printerManager.select(settings.printerId);
+  }, [settings.printerId]);
 
-        setCapabilities(nextCapabilities);
-        setSettings((current) => applyCapabilityDefaults(current, nextCapabilities));
-        setStatus(null);
-      } catch {
-        if (!cancelled) {
-          setCapabilities(null);
-          setStatus("Unable to read printer capabilities.");
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingCapabilities(false);
-        }
+  // When the selected printer's capabilities arrive, snap settings to its defaults.
+  useEffect(() => {
+    if (!capabilities) return;
+    setSettings((current) => applyCapabilityDefaults(current, capabilities));
+  }, [capabilities]);
+
+  const addRecentFile = useCallback((path: string) => {
+    setRecentFiles((current) => {
+      const entry: RecentFile = { path, name: fileNameFromPath(path), openedAt: new Date().toISOString() };
+      const next = [entry, ...current.filter((item) => item.path !== path)].slice(0, MAX_RECENT);
+      persistRecentFiles(next);
+      return next;
+    });
+  }, []);
+
+  const selectPdfPath = useCallback(
+    (path: string) => {
+      setPdfFile(pdfFromPath(path));
+      addRecentFile(path);
+    },
+    [addRecentFile]
+  );
+
+  // Opens the Print Jobs dialog focused on a specific job (from a job toast).
+  const openJob = useCallback((jobId: string) => {
+    setFocusedJobId(jobId);
+    setIsJobsOpen(true);
+  }, []);
+
+  const removeRecentFile = useCallback((path: string) => {
+    setRecentFiles((current) => {
+      const next = current.filter((item) => item.path !== path);
+      persistRecentFiles(next);
+      return next;
+    });
+  }, []);
+
+  const clearRecentFiles = useCallback(() => {
+    persistRecentFiles([]);
+    setRecentFiles([]);
+  }, []);
+
+  // Applies a profile: resolves its settings against the CURRENT printer's
+  // capabilities (never force-switches printers), restores the layout, records
+  // usage, and surfaces any compatibility adjustments — nothing is silently lost.
+  const applyProfile = useCallback(
+    (profile: PrintProfile) => {
+      const resolved = profileManager.resolveApplication(profile, capabilities);
+      setSettings((current) => ({ ...current, ...resolved.settings, printerId: current.printerId }));
+      setLayout(resolved.layout);
+      profileManager.recordUse(profile.id);
+      setIsProfilesOpen(false);
+      if (resolved.warnings.length > 0) {
+        setProfileWarnings({ profileName: profile.name, warnings: resolved.warnings });
+        notify({ type: "info", severity: "warning", title: "Profile applied with adjustments", message: `“${profile.name}” — ${resolved.warnings.length} setting${resolved.warnings.length > 1 ? "s" : ""} adjusted for this printer.` });
+      } else {
+        notify({ type: "info", severity: "success", title: "Profile applied", message: `“${profile.name}” is ready to print.` });
       }
-    }
+    },
+    [capabilities]
+  );
 
-    loadCapabilities();
-
+  // Restore the last opened PDF once at startup, but only if the file still exists.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const last = readRecentFiles()[0];
+    if (!last) return;
+    let cancelled = false;
+    readPdfFileMetadata({ name: last.name, path: last.path, previewUrl: "" }).then((metadata) => {
+      if (!cancelled && metadata) setPdfFile(pdfFromPath(last.path));
+    });
     return () => {
       cancelled = true;
     };
-  }, [settings.printerId]);
-
-  const selectPdfPath = useCallback((path: string) => {
-    setPdfFile(pdfFromPath(path));
-    setRecentFiles((current) => {
-      const nextRecent = [path, ...current.filter((item) => item !== path)].slice(0, 5);
-      localStorage.setItem("printpilot.recent", JSON.stringify(nextRecent));
-      return nextRecent;
-    });
-    setStatus(null);
   }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
 
     const unlistenPromise = getCurrentWebviewWindow().onDragDropEvent((event) => {
-      if (event.payload.type !== "drop") return;
-      const path = event.payload.paths.find((candidate) => candidate.toLowerCase().endsWith(".pdf"));
-      if (path) selectPdfPath(path);
+      const payload = event.payload;
+      if (payload.type === "enter" || payload.type === "over") {
+        setIsDragging(true);
+        return;
+      }
+      if (payload.type === "leave") {
+        setIsDragging(false);
+        return;
+      }
+      if (payload.type === "drop") {
+        setIsDragging(false);
+        const path = payload.paths.find((candidate) => candidate.toLowerCase().endsWith(".pdf"));
+        if (!path) {
+          notify({ type: "info", severity: "warning", title: "Unsupported file", message: "Only PDF files can be opened." });
+          return;
+        }
+        if (currentPathRef.current && currentPathRef.current !== path) {
+          setPendingReplacePath(path);
+        } else {
+          selectPdfPath(path);
+        }
+      }
     });
 
     return () => {
@@ -243,9 +435,29 @@ export default function App() {
     };
   }, [selectPdfPath]);
 
+  // Desktop-grade keyboard shortcuts: ⌘/Ctrl+O opens a PDF, ⌘/Ctrl+P prints
+  // (and overrides the browser's own print dialog). Reads the latest handlers
+  // from a ref so the listener is registered only once.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!event.metaKey && !event.ctrlKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "o") {
+        event.preventDefault();
+        shortcutRef.current.browse();
+      } else if (key === "p") {
+        event.preventDefault();
+        if (shortcutRef.current.canPrint) shortcutRef.current.print();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   async function browsePdf() {
     if (!isTauriRuntime()) {
-      setStatus("Run the native app to choose and print PDFs.");
+      notify({ type: "info", severity: "info", title: "Desktop app required", message: "Run the native app to choose and print PDFs." });
       return;
     }
 
@@ -261,12 +473,11 @@ export default function App() {
 
   async function printPdf() {
     if (!pdfFile?.path) {
-      setStatus("Choose a PDF before printing.");
+      notify({ type: "info", severity: "warning", title: "No document", message: "Choose a PDF before printing." });
       return;
     }
 
     setIsPrinting(true);
-    setStatus(null);
 
     const historyBase = {
       id: `${Date.now()}-${pdfFile.name}`,
@@ -279,11 +490,30 @@ export default function App() {
     };
 
     try {
-      const response = await submitPrintJob({ pdfPath: pdfFile.path, settings });
-      setStatus(response.message || `Print job ${response.jobId} sent.`);
-      recordHistoryItem({ ...historyBase, status: "Completed" });
+      // Every print becomes a managed Print Job — the JobManager is the single
+      // source of truth and performs the actual (unchanged) submission internally.
+      const job = await jobManager.print({
+        documentName: pdfFile.name,
+        documentPath: pdfFile.path,
+        printerId: settings.printerId,
+        printerName: selectedPrinter?.name || settings.printerId || "Not selected",
+        settings,
+        totalPages: documentPageCount || 1,
+        paperSize: printPaperPreview?.label || settings.paperSize || "Default",
+        orientation: layout.orientation
+      });
+
+      if (job.status === "completed") {
+        // Outcomes surface through toasts + the Notification Center (jobCompleted /
+        // jobFailed) and the Print Job timeline — no inline banner above Print.
+        recordHistoryItem({ ...historyBase, status: "Completed" });
+      } else {
+        recordHistoryItem({ ...historyBase, status: "Failed" });
+      }
     } catch (error) {
-      setStatus(friendlyError(error));
+      // The job never reached a managed failed state (it threw before running), so
+      // no jobFailed notification fired — surface it as a toast here.
+      notify({ type: "info", severity: "error", title: "Print failed", message: friendlyError(error) });
       recordHistoryItem({ ...historyBase, status: "Failed" });
     } finally {
       setIsPrinting(false);
@@ -293,9 +523,14 @@ export default function App() {
   function recordHistoryItem(item: PrintHistoryItem) {
     setPrintHistory((current) => {
       const nextHistory = [item, ...current].slice(0, 25);
-      localStorage.setItem("printpilot.history", JSON.stringify(nextHistory));
+      localStorage.setItem(STORAGE.history, JSON.stringify(nextHistory));
       return nextHistory;
     });
+  }
+
+  function confirmReplace() {
+    if (pendingReplacePath) selectPdfPath(pendingReplacePath);
+    setPendingReplacePath(null);
   }
 
   function startPanelResize(event: React.PointerEvent<HTMLButtonElement>) {
@@ -309,7 +544,7 @@ export default function App() {
       const rawPercent = ((nextEvent.clientX - bounds.left) / bounds.width) * 100;
       const nextPercent = Math.min(74, Math.max(58, rawPercent));
       setLeftPanelPercent(nextPercent);
-      localStorage.setItem("printpilot.split", String(nextPercent));
+      localStorage.setItem(STORAGE.split, String(nextPercent));
     }
 
     function stopResize() {
@@ -321,23 +556,93 @@ export default function App() {
     window.addEventListener("pointerup", stopResize, { once: true });
   }
 
+  // Expose the latest handlers to the keyboard-shortcut listener.
+  shortcutRef.current = { browse: browsePdf, print: printPdf, canPrint };
+
+  // Snapshot of the selected printer's features, stored with saved profiles.
+  const currentCapabilitySnapshot: ProfileCapabilitySnapshot | undefined = selectedPrinter?.capabilitySummary
+    ? {
+        color: selectedPrinter.capabilitySummary.color,
+        duplex: selectedPrinter.capabilitySummary.duplex,
+        booklet: selectedPrinter.capabilitySummary.booklet,
+        stapling: selectedPrinter.capabilitySummary.stapling,
+        holePunch: selectedPrinter.capabilitySummary.holePunch,
+        paperSizes: capabilities?.paperSizes.map((choice) => choice.value) || []
+      }
+    : undefined;
+
+  // Compact printer status for the header.
+  const printerStatus = !hasPrinter
+    ? { tone: "offline" as const, label: "No printer" }
+    : selectedPrinter?.status === "online"
+      ? { tone: "online" as const, label: selectedPrinter?.name || "Ready" }
+      : selectedPrinter?.status === "offline"
+        ? { tone: "error" as const, label: "Offline" }
+        : { tone: "idle" as const, label: "Unknown" };
+
   return (
-    <main className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_30%),linear-gradient(135deg,#17181A_0%,#101113_48%,#202124_100%)] p-2 text-foreground sm:p-3 md:p-4">
+    <main className="h-screen overflow-hidden bg-app p-2 text-foreground sm:p-3 md:p-4">
       <div className="mx-auto flex h-full max-w-[2200px] flex-col gap-2 md:gap-3">
-        <header className="flex shrink-0 items-center justify-end">
-          <div className="flex min-w-0 flex-nowrap justify-end gap-1.5 sm:gap-2">
-            <Button className="h-9 px-2.5 sm:h-10 sm:px-4" variant="secondary" onClick={browsePdf}>
-              <FileUp className="h-4 w-4" />
-              Browse PDF
-            </Button>
-            <Button className="h-9 px-2.5 sm:h-10 sm:px-4" variant="outline" onClick={loadPrinters} disabled={isLoadingPrinters}>
-              <RefreshCw className={`h-4 w-4 ${isLoadingPrinters ? "animate-spin" : ""}`} />
+        <header className="flex shrink-0 items-center justify-between gap-3 rounded-lg border border-edge-subtle bg-surface px-3 py-2 shadow-e-sm">
+          {/* Brand + current document */}
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex shrink-0 items-center gap-2.5">
+              <div className="grid h-9 w-9 place-items-center rounded-lg bg-brand-soft text-brand ring-1 ring-edge-subtle">
+                <Icon icon={Printer} size="md" />
+              </div>
+              <p className={`${typography.headingS} hidden text-ink sm:block`}>PrintPilot</p>
+            </div>
+            <Divider orientation="vertical" className="h-8" />
+            <div className="min-w-0">
+              {pdfFile ? (
+                <>
+                  <p className={`${typography.label} truncate text-ink`} title={pdfFile.name}>
+                    {pdfFile.name}
+                  </p>
+                  <p className={`${typography.caption} text-ink-muted`}>
+                    {documentPageCount ? `${documentPageCount} ${documentPageCount === 1 ? "page" : "pages"} · PDF` : "PDF document"}
+                  </p>
+                </>
+              ) : (
+                <p className={`${typography.bodySmall} text-ink-muted`}>No document open</p>
+              )}
+            </div>
+          </div>
+
+          {/* Status + actions */}
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusIndicator tone={printerStatus.tone} label={printerStatus.label} pulse={printerStatus.tone === "online"} className="hidden max-w-[180px] truncate laptop:inline-flex" />
+            <SearchBox
+              aria-label="Search (coming soon)"
+              placeholder="Search…"
+              value=""
+              onChange={() => {}}
+              disabled
+              title="Search is coming in a future update"
+              className="hidden w-44 desktop:block"
+            />
+            <Divider orientation="vertical" className="hidden h-6 laptop:block" />
+            <DSButton variant="secondary" size="sm" leadingIcon={FileUp} onClick={browsePdf}>
+              Browse
+            </DSButton>
+            <DSButton variant="ghost" size="sm" leadingIcon={RefreshCw} loading={isLoadingPrinters} onClick={() => loadPrinters(true)}>
               Refresh
-            </Button>
-            <Button className="h-9 px-2.5 sm:h-10 sm:px-4" variant="outline" onClick={() => setIsHistoryOpen(true)}>
-              <History className="h-4 w-4" />
-              History
-            </Button>
+            </DSButton>
+            <Divider orientation="vertical" className="h-6" />
+            <NotificationCenter />
+            <span className="relative inline-flex">
+              <IconButton icon={ListChecks} label="Print jobs" onClick={() => setIsJobsOpen(true)} />
+              {activeJobCount > 0 && (
+                <span className="pointer-events-none absolute -right-0.5 -top-0.5 grid h-4 min-w-[16px] place-items-center rounded-pill bg-brand px-1 text-[10px] font-semibold text-brand-fg">
+                  {activeJobCount}
+                </span>
+              )}
+            </span>
+            <IconButton icon={Clock} label="Recent files" onClick={() => setIsRecentOpen(true)} />
+            <IconButton icon={Bookmark} label="Print profiles" onClick={() => setIsProfilesOpen(true)} />
+            <IconButton icon={History} label="Print history" onClick={() => setIsHistoryOpen(true)} />
+            <Divider orientation="vertical" className="h-6" />
+            <AccountMenu />
           </div>
         </header>
 
@@ -347,7 +652,16 @@ export default function App() {
           style={{ "--left-panel": `${leftPanelPercent}%` } as CSSProperties}
         >
           <div className="min-h-0 min-w-0">
-            <PdfPreview file={pdfFile} printPaper={printPaperPreview} printerName={selectedPrinter?.name} />
+            <PdfPreview
+              file={pdfFile}
+              printPaper={printPaperPreview}
+              layout={layout}
+              printerName={selectedPrinter?.name}
+              recentFiles={recentFiles}
+              onBrowse={browsePdf}
+              onOpenRecent={selectPdfPath}
+              onPageCount={setDocumentPageCount}
+            />
           </div>
 
           <button
@@ -356,27 +670,71 @@ export default function App() {
             onPointerDown={startPanelResize}
             type="button"
           >
-            <span className="my-auto h-16 w-1 rounded-full bg-white/10 transition group-hover:bg-primary group-focus-visible:bg-primary" />
+            <span className="my-auto h-16 w-1 rounded-pill bg-white/10 transition duration-medium ease-standard group-hover:bg-brand group-focus-visible:bg-brand" />
           </button>
 
-          <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border-[#3D3F43] bg-[#1C1D20]/82 p-0 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+          <AppCard padded={false} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
             <SettingsPanel
               printers={printers}
               capabilities={capabilities}
               isLoadingCapabilities={isLoadingCapabilities}
+              isLoadingPrinters={isLoadingPrinters}
               settings={settings}
               onChange={setSettings}
+              layout={layout}
+              onLayoutChange={setLayout}
+              paperChoices={paperChoices}
+              hasPrinter={hasPrinter}
               canPrint={canPrint}
               isPrinting={isPrinting}
-              status={status}
+              printDisabledReason={printDisabledReason}
+              onRefresh={() => loadPrinters(true)}
+              onOpenPrinterDashboard={() => setIsPrinterDashboardOpen(true)}
+              onApplyProfile={applyProfile}
+              onOpenProfileLibrary={() => setIsProfilesOpen(true)}
               onPrint={printPdf}
             />
-          </Card>
+          </AppCard>
         </section>
       </div>
+
+      {isDragging && (
+        <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm animate-in fade-in-0 duration-150">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-primary/70 bg-[#1C1D20]/85 px-12 py-10 text-center">
+            <FileUp className="h-10 w-10 text-primary" />
+            <p className="text-lg font-semibold text-white">Drop your PDF to open it</p>
+            <p className="text-sm text-[#AEAEB2]">
+              {pdfFile ? "This will replace the current document." : "Release anywhere in the window."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isJobsOpen && (
+        <JobsDialog
+          initialJobId={focusedJobId}
+          onClose={() => {
+            setIsJobsOpen(false);
+            setFocusedJobId(null);
+          }}
+        />
+      )}
+
+      {isPrinterDashboardOpen && (
+        <PrinterDashboard
+          printerId={settings.printerId}
+          capabilitiesLoading={isLoadingCapabilities}
+          onClose={() => setIsPrinterDashboardOpen(false)}
+          onOpenJobs={() => {
+            setIsPrinterDashboardOpen(false);
+            setIsJobsOpen(true);
+          }}
+        />
+      )}
+
       {isHistoryOpen && (
         <HistoryDialog
-          items={historyItems}
+          items={printHistory}
           onClose={() => setIsHistoryOpen(false)}
           onReprint={(path) => {
             selectPdfPath(path);
@@ -384,6 +742,54 @@ export default function App() {
           }}
         />
       )}
+
+      {isRecentOpen && (
+        <RecentFilesDialog
+          items={recentFiles}
+          onOpen={(path) => {
+            selectPdfPath(path);
+            setIsRecentOpen(false);
+          }}
+          onRemove={removeRecentFile}
+          onClear={clearRecentFiles}
+          onClose={() => setIsRecentOpen(false)}
+        />
+      )}
+
+      {isProfilesOpen && (
+        <ProfileLibrary
+          onClose={() => setIsProfilesOpen(false)}
+          onApply={applyProfile}
+          currentConfig={{
+            settings,
+            layout,
+            printerId: settings.printerId,
+            printerName: selectedPrinter?.name,
+            capabilitySnapshot: currentCapabilitySnapshot
+          }}
+        />
+      )}
+
+      {profileWarnings && (
+        <CompatibilityWarningsDialog
+          profileName={profileWarnings.profileName}
+          warnings={profileWarnings.warnings}
+          onClose={() => setProfileWarnings(null)}
+        />
+      )}
+
+      {pendingReplacePath && (
+        <ConfirmDialog
+          title="Replace current PDF?"
+          message={`Open “${fileNameFromPath(pendingReplacePath)}” and close the current document?`}
+          confirmLabel="Replace"
+          onConfirm={confirmReplace}
+          onCancel={() => setPendingReplacePath(null)}
+        />
+      )}
+
+      {/* Floating top-right toast stack — mirrors the Notification Center. */}
+      <ToastViewport onOpenJob={openJob} />
     </main>
   );
 }
@@ -432,7 +838,7 @@ function HistoryDialog({
                     <FileText className="h-4 w-4 shrink-0 text-red-400" />
                     <span className="truncate">{item.fileName}</span>
                   </span>
-                  <span className="text-xs text-[#B9BABE]">{formatHistoryDate(item.printedAt)}</span>
+                  <span className="text-xs text-[#B9BABE]">{formatTimestamp(item.printedAt)}</span>
                   <span className="truncate text-[#D7D8DD]">{item.printerName}</span>
                   <span className="truncate text-[#D7D8DD]">{item.paperSize}</span>
                   <span className="text-[#D7D8DD]">{item.copies}</span>
@@ -458,7 +864,139 @@ function HistoryDialog({
   );
 }
 
-function formatHistoryDate(value: string) {
+function RecentFilesDialog({
+  items,
+  onOpen,
+  onRemove,
+  onClear,
+  onClose
+}: {
+  items: RecentFile[];
+  onOpen: (path: string) => void;
+  onRemove: (path: string) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const [availability, setAvailability] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      items.map(async (item) => {
+        const metadata = await readPdfFileMetadata({ name: item.name, path: item.path, previewUrl: "" });
+        return [item.path, metadata !== null] as const;
+      })
+    ).then((entries) => {
+      if (!cancelled) setAvailability(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6">
+      <div className="flex h-[68vh] w-[64vw] max-w-3xl flex-col overflow-hidden rounded-xl border border-[#48484A] bg-[#242426] shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Recent Files</h2>
+            <p className="mt-0.5 text-xs text-[#AEAEB2]">The last {MAX_RECENT} PDFs you opened.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button className="h-8 rounded-md px-3" variant="outline" disabled={!items.length} onClick={onClear}>
+              <Trash2 className="h-4 w-4" />
+              Clear All
+            </Button>
+            <button className="rounded-md p-1.5 text-[#AEAEB2] transition hover:bg-white/10 hover:text-white" onClick={onClose} type="button">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          {items.length ? (
+            <div className="grid gap-1.5">
+              {items.map((item) => {
+                const available = availability[item.path];
+                const missing = available === false;
+                return (
+                  <div
+                    className="flex items-center gap-3 rounded-md border border-white/10 bg-black/12 px-3 py-2 hover:bg-white/[0.04]"
+                    key={item.path}
+                  >
+                    <FileText className={`h-4 w-4 shrink-0 ${missing ? "text-[#6b6d73]" : "text-red-400"}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className={`truncate text-sm ${missing ? "text-[#8A8C92]" : "text-[#F3F4F6]"}`}>{item.name}</p>
+                      <p className="truncate text-xs text-[#8A8C92]">{item.path}</p>
+                    </div>
+                    {missing ? (
+                      <span className="rounded-full bg-[#3A3A3C] px-2 py-1 text-xs text-[#B9BABE]">Unavailable</span>
+                    ) : (
+                      <span className="text-xs text-[#8A8C92]">{formatTimestamp(item.openedAt)}</span>
+                    )}
+                    <Button className="h-8 rounded-md px-3" variant="secondary" disabled={missing} onClick={() => onOpen(item.path)}>
+                      Open
+                    </Button>
+                    <button
+                      aria-label={`Remove ${item.name}`}
+                      className="rounded-md p-1.5 text-[#AEAEB2] transition hover:bg-white/10 hover:text-white"
+                      onClick={() => onRemove(item.path)}
+                      type="button"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid place-items-center px-6 py-12 text-sm text-[#AEAEB2]">No recent files yet.</div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 justify-end border-t border-white/10 px-5 py-3">
+          <Button className="h-9 rounded-md px-5" onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6">
+      <div className="w-full max-w-md rounded-xl border border-[#48484A] bg-[#242426] p-5 shadow-2xl">
+        <h2 className="text-base font-semibold text-white">{title}</h2>
+        <p className="mt-2 text-sm leading-6 text-[#C4C5CA]">{message}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button className="h-9 rounded-md px-4" variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button className="h-9 rounded-md px-4" onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatTimestamp(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown";
 

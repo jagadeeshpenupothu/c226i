@@ -9,9 +9,10 @@ interface PdfInfoBarProps {
   firstPage: PdfPageSize | null;
   fileSizeBytes: number | null;
   printPaper?: PrintPaperPreview | null;
+  layoutSummary?: string;
 }
 
-export function PdfInfoBar({ file, pageCount, firstPage, fileSizeBytes, printPaper }: PdfInfoBarProps) {
+export function PdfInfoBar({ file, pageCount, firstPage, fileSizeBytes, printPaper, layoutSummary }: PdfInfoBarProps) {
   return (
     <div className="border-b border-[#48484A] bg-[#2C2C2E] px-4 py-3 text-white">
       <p className="truncate text-sm font-semibold">{file.name}</p>
@@ -27,12 +28,9 @@ export function PdfInfoBar({ file, pageCount, firstPage, fileSizeBytes, printPap
           </>
         )}
         <span>{formatFileSize(fileSizeBytes)}</span>
-        {printPaper && (
-          <span>
-            Print: {printPaper.label}, printable area shown
-          </span>
-        )}
+        {printPaper && <span>Print: {printPaper.label}</span>}
       </div>
+      {layoutSummary && <p className="mt-1.5 text-xs font-medium text-sky-300/90">Layout: {layoutSummary}</p>}
     </div>
   );
 }

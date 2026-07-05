@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
-import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, FileText, Minus, Plus } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { describePrintLayout, type PrintLayout } from "@/features/layout/types";
 import type { PdfFile } from "@/features/pdf/types";
 import type { PrintPaperPreview } from "@/services/pdf/printPreview";
 import { formatFileSize } from "@/services/pdf/pdfMetadata";
 import type { PdfPageSize } from "@/types/pdf";
-import { useElementSize } from "@/hooks/useElementSize";
 import { PdfOverviewThumbnail } from "./PdfOverviewThumbnail";
 
 interface PdfDocumentOverviewProps {
@@ -16,21 +15,13 @@ interface PdfDocumentOverviewProps {
   firstPage: PdfPageSize;
   fileSizeBytes: number | null;
   printPaper: PrintPaperPreview | null;
+  layout: PrintLayout;
   printerName?: string;
+  onOpenPage: (pageNumber: number) => void;
 }
 
-const PAGES_PER_ROW_OPTIONS = [2, 3, 4, 5, 6, 8, 10];
-export type PreviewMode = "fit-to-paper" | "fill-paper" | "stretch" | "actual-size" | "center" | "fit-width" | "fit-height";
-
-const PREVIEW_MODES: { value: PreviewMode; label: string }[] = [
-  { value: "fit-to-paper", label: "Fit to Paper" },
-  { value: "fill-paper", label: "Fill Paper" },
-  { value: "stretch", label: "Stretch" },
-  { value: "actual-size", label: "Actual Size (100%)" },
-  { value: "center", label: "Center" },
-  { value: "fit-width", label: "Fit Width" },
-  { value: "fit-height", label: "Fit Height" }
-];
+const MIN_PAGES_PER_ROW = 2;
+const MAX_PAGES_PER_ROW = 10;
 
 export function PdfDocumentOverview({
   file,
@@ -39,36 +30,22 @@ export function PdfDocumentOverview({
   firstPage,
   fileSizeBytes,
   printPaper,
-  printerName
+  layout,
+  printerName,
+  onOpenPage
 }: PdfDocumentOverviewProps) {
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
-  const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
-  const gridSize = useElementSize(gridElement);
   const [selectedPage, setSelectedPage] = useState(1);
   const [search, setSearch] = useState("1");
   const [pagesPerRow, setPagesPerRow] = useState(5);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("fit-to-paper");
-  const paperSize = useMemo(
-    () => ({
-      label: printPaper?.label || firstPage.paperSize,
-      widthPt: printPaper?.widthPt || firstPage.widthPt,
-      heightPt: printPaper?.heightPt || firstPage.heightPt,
-      marginPt: printPaper?.marginPt || (3 * 72) / 25.4
-    }),
-    [firstPage.heightPt, firstPage.paperSize, firstPage.widthPt, printPaper]
-  );
-  const paperAspectRatio = useMemo(() => paperSize.widthPt / paperSize.heightPt, [paperSize.heightPt, paperSize.widthPt]);
+  const fallbackPage = { widthPt: firstPage.widthPt, heightPt: firstPage.heightPt };
   const documentDetails = [
     `${pageCount} ${pageCount === 1 ? "Page" : "Pages"}`,
     `${firstPage.paperSize} ${firstPage.orientation}`,
     formatFileSize(fileSizeBytes),
-    `Printer: ${printerName || "Not selected"}`,
-    `Paper: ${paperSize.label}`
+    `Printer: ${printerName || "Not connected"}`,
+    `Paper: ${printPaper?.label || "Document size"}`
   ];
-  const gridStyle = {
-    "--pages-per-row": effectivePagesPerRow(gridSize.width, pagesPerRow),
-    "--paper-ratio": paperAspectRatio
-  } as CSSProperties;
 
   useEffect(() => {
     pageRefs.current[selectedPage]?.scrollIntoView({
@@ -142,31 +119,17 @@ export function PdfDocumentOverview({
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center justify-end border-b border-white/10 bg-black/10 px-3 py-2 md:px-4 md:py-3">
-        <label className="flex min-w-0 items-center gap-2 text-sm text-[#C4C5CA]">
-          <span className="shrink-0">Preview Mode</span>
-          <select
-            aria-label="Preview mode"
-            className="h-8 max-w-[180px] rounded-md border border-white/10 bg-white/5 px-2 text-sm text-white outline-none focus:ring-2 focus:ring-primary md:max-w-none"
-            value={previewMode}
-            onChange={(event) => setPreviewMode(event.target.value as PreviewMode)}
-          >
-            {PREVIEW_MODES.map((mode) => (
-              <option key={mode.value} value={mode.value}>
-                {mode.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-black/10 px-3 py-2 md:px-4 md:py-2.5">
+        <p className="truncate text-xs font-medium text-sky-300/90">
+          Print layout: <span className="text-[#D7D8DD]">{describePrintLayout(layout)}</span>
+        </p>
+        <span className="shrink-0 text-[11px] text-[#8A8C92]">Click a page to open the sheet preview</span>
       </div>
 
-      <div ref={setGridElement} className="min-h-0 flex-1 overflow-auto px-3 py-4 md:px-5 md:py-6">
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-4 md:px-5 md:py-6">
         <div
           className="grid items-start gap-x-3 gap-y-4 transition-[grid-template-columns] duration-200 ease-out md:gap-x-4 md:gap-y-5"
-          style={{
-            ...gridStyle,
-            gridTemplateColumns: "repeat(var(--pages-per-row), minmax(0, 1fr))"
-          }}
+          style={{ gridTemplateColumns: `repeat(${pagesPerRow}, minmax(0, 1fr))` }}
         >
           {Array.from({ length: pageCount }, (_, index) => {
             const pageNumber = index + 1;
@@ -182,9 +145,10 @@ export function PdfDocumentOverview({
                   isSelected={selectedPage === pageNumber}
                   isVisible
                   pageNumber={pageNumber}
-                  paperSize={paperSize}
-                  previewMode={previewMode}
-                  onClick={() => goToPage(pageNumber)}
+                  printPaper={printPaper}
+                  fallbackPage={fallbackPage}
+                  layout={layout}
+                  onClick={() => onOpenPage(pageNumber)}
                 />
               </div>
             );
@@ -192,33 +156,33 @@ export function PdfDocumentOverview({
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center justify-end border-t border-white/10 bg-[#18191C]/92 px-3 py-2 md:px-4 md:py-3">
-        <label className="flex items-center gap-2 text-sm text-[#C4C5CA]">
-          <span>Pages per row</span>
-          <select
-            aria-label="Pages per row"
-            className="h-8 rounded-md border border-white/10 bg-white/5 px-2 text-sm text-white outline-none focus:ring-2 focus:ring-primary"
-            value={pagesPerRow}
-            onChange={(event) => setPagesPerRow(Number(event.target.value))}
+      {/* A stepper, not a native <select>: this control sits at the window's
+          bottom edge, where WebKitGTK's upward-opening dropdown loses its grab
+          and dismisses instantly. A stepper has no popup, so it can't. */}
+      <div className="flex shrink-0 items-center justify-end gap-3 border-t border-white/10 bg-[#18191C]/92 px-3 py-2 text-sm text-[#C4C5CA] md:px-4 md:py-3">
+        <span>Pages per row</span>
+        <div className="flex items-center gap-1">
+          <button
+            aria-label="Fewer pages per row"
+            className="grid h-8 w-8 place-items-center rounded-md bg-white/10 text-white transition hover:bg-white/15 disabled:opacity-40"
+            disabled={pagesPerRow <= MIN_PAGES_PER_ROW}
+            onClick={() => setPagesPerRow((value) => Math.max(MIN_PAGES_PER_ROW, value - 1))}
+            type="button"
           >
-            {PAGES_PER_ROW_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
+            <Minus className="h-4 w-4" />
+          </button>
+          <span className="min-w-[2ch] text-center text-sm font-semibold text-white tabular-nums">{pagesPerRow}</span>
+          <button
+            aria-label="More pages per row"
+            className="grid h-8 w-8 place-items-center rounded-md bg-white/10 text-white transition hover:bg-white/15 disabled:opacity-40"
+            disabled={pagesPerRow >= MAX_PAGES_PER_ROW}
+            onClick={() => setPagesPerRow((value) => Math.min(MAX_PAGES_PER_ROW, value + 1))}
+            type="button"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   );
-}
-
-function effectivePagesPerRow(containerWidth: number, selectedPagesPerRow: number) {
-  if (!containerWidth) return selectedPagesPerRow;
-
-  const minimumThumbnailWidth = containerWidth >= 1100 ? 150 : containerWidth >= 760 ? 135 : 118;
-  const gap = containerWidth >= 760 ? 16 : 12;
-  const comfortableColumns = Math.max(2, Math.floor((containerWidth + gap) / (minimumThumbnailWidth + gap)));
-
-  return Math.max(2, Math.min(selectedPagesPerRow, comfortableColumns));
 }

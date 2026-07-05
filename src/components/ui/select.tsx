@@ -7,11 +7,15 @@ type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
 };
 
 export function Select({ label, className, children, ...props }: SelectProps) {
+  // NOTE: the <select> must not be wrapped in a <label>. In WebKitGTK the label
+  // re-dispatches the click onto the control, which toggles the just-opened
+  // native dropdown shut ("opens and escapes"). We use a div + aria-label instead.
   return (
-    <label className="grid gap-2 text-sm font-medium text-foreground">
+    <div className="grid gap-2 text-sm font-medium text-foreground">
       {label && <span>{label}</span>}
       <span className="relative">
         <select
+          aria-label={label || props["aria-label"]}
           className={cn(
             "h-11 w-full appearance-none rounded-lg border border-border bg-[#1C1C1E] px-3 pr-10 text-sm text-foreground outline-none transition focus:ring-2 focus:ring-ring",
             className
@@ -22,6 +26,6 @@ export function Select({ label, className, children, ...props }: SelectProps) {
         </select>
         <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       </span>
-    </label>
+    </div>
   );
 }

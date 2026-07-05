@@ -3,3 +3,18 @@ dist
 src-tauri/target
 .DS_Store
 *.log
+
+# Local environment / secrets — only .env.example is committed
+.env
+.env.local
+.env.*.local
+
+# Generated installer binaries — distribute via GitHub Releases, not git.
+# The installers/ folder keeps only its README docs under version control.
+installers/**/*.AppImage
+installers/**/*.deb
+installers/**/*.rpm
+installers/**/*.dmg
+installers/**/*.msi
+installers/**/*.exe
+installers/**/SHA256SUMS.txt

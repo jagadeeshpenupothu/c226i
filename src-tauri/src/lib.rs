@@ -1,11 +1,33 @@
 mod commands;
-mod cups;
 mod models;
+mod platform;
+
+// CUPS parsing and option mapping only apply to the macOS / Linux backend.
+#[cfg(not(target_os = "windows"))]
+mod cups;
+#[cfg(not(target_os = "windows"))]
 mod parser;
+#[cfg(not(target_os = "windows"))]
 mod printer;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // On some Linux/Wayland setups WebKitGTK renders a blank (white) window even
+    // though the DOM is present, because of a compositing/paint bug in the
+    // Wayland path. Forcing the webview onto the X11 (XWayland) backend paints
+    // reliably. Must be set before GTK initializes; only applied when the user
+    // hasn't already chosen a backend, so it stays overridable.
+    #[cfg(target_os = "linux")]
+    {
+        // GNOME/Wayland sessions export GDK_BACKEND=wayland, which triggers the
+        // blank-window bug; override it to x11 (XWayland). Leave any explicit
+        // non-Wayland choice untouched.
+        let backend = std::env::var("GDK_BACKEND").unwrap_or_default();
+        if backend.is_empty() || backend == "wayland" {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

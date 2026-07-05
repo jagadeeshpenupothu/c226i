@@ -38,7 +38,7 @@ export function usePdfKeyboardShortcuts({
         return;
       }
 
-      if (!event.metaKey) return;
+      if (!event.metaKey && !event.ctrlKey) return;
 
       if (event.key === "+" || event.key === "=") {
         event.preventDefault();

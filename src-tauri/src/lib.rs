@@ -1,4 +1,5 @@
 mod commands;
+mod diagnostics;
 mod models;
 mod platform;
 
@@ -34,7 +35,9 @@ pub fn run() {
             commands::list_printers,
             commands::get_printer_capabilities,
             commands::get_pdf_file_metadata,
-            commands::print_pdf
+            commands::print_pdf,
+            commands::capture_diagnostic_snapshot,
+            commands::export_diagnostic_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running PrintPilot");

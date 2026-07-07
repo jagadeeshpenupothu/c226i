@@ -1,6 +1,9 @@
 use crate::models::{
+    DiagnosticExportResponse,
     PdfFileMetadata, PrintRequest, PrintResponse, PrinterCapabilities, PrinterInfo,
+    PrinterDiagnosticSnapshot,
 };
+use crate::diagnostics;
 use crate::platform;
 use std::path::Path;
 
@@ -51,4 +54,17 @@ pub fn print_pdf(request: PrintRequest) -> Result<PrintResponse, String> {
     }
 
     platform::print_pdf(&request)
+}
+
+#[tauri::command]
+pub fn capture_diagnostic_snapshot(printer_id: String) -> Result<PrinterDiagnosticSnapshot, String> {
+    diagnostics::capture_snapshot(&printer_id, env!("CARGO_PKG_VERSION"))
+}
+
+#[tauri::command]
+pub fn export_diagnostic_snapshot(
+    snapshot: PrinterDiagnosticSnapshot,
+    path: String,
+) -> Result<DiagnosticExportResponse, String> {
+    diagnostics::export_snapshot(&snapshot, &path)
 }

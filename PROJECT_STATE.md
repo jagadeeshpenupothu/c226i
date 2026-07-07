@@ -496,10 +496,19 @@ Project goal: PrintPilot is a safe desktop printing app for macOS/Windows/Linux 
 Current architecture decision:
 - CONTROLLED NATIVE MIGRATION is approved.
 - The existing Tauri/React/Rust PrintPilot application is preserved as the known-good prototype/reference implementation.
+- Temporary development decision: the existing Tauri/React/TypeScript/Rust application is resumed as the ACTIVE DEVELOPMENT TRACK for real printer research and diagnostics.
+- Swift/native migration is DEFERRED, NOT CANCELLED.
 - Do not delete, rewrite, or migrate the existing Tauri application until native parity is verified.
+- Preserve `native-macos/` unchanged while Tauri diagnostics work is active.
 - The native macOS application will live in `native-macos/`.
 - The approved native milestone is Native PDF Layout Proof.
 - The current native implementation phase is Phase 1: Native Project Shell.
+
+Current Tauri diagnostics phase:
+- REAL PRINTER DISCOVERY AND DIAGNOSTICS.
+- Purpose: real printer investigation, capability discovery, CUPS diagnostics, printer status research, queue behavior research, and workflow prototyping.
+- Exact current task: capture and persist a read-only diagnostic snapshot of the Konica Minolta bizhub C226i and the macOS/CUPS printing environment.
+- Printer capabilities must be detected from real evidence and never guessed.
 
 Approved Native PDF Layout Proof design:
 - Primary goal: prove one canonical immutable resolved layout/page drawing plan can drive both native on-screen preview and generated print-ready PDF artifact.
@@ -552,7 +561,7 @@ Completed phases:
 - Bootstrap, PDF import, PDF preview, CUPS parser/capability foundation, frontend build hygiene.
 
 Current phase:
-- Native migration Phase 1: Native Project Shell.
+- REAL PRINTER DISCOVERY AND DIAGNOSTICS on the preserved Tauri prototype.
 
 Native milestone success criteria:
 - Native app launches on macOS Monterey 12.7.6 Intel.
@@ -607,6 +616,8 @@ Implemented features:
 - Profiles/presets.
 - Optional Firebase Google auth foundation.
 - Release workflow configuration.
+- Read-only printer diagnostic snapshot capture and JSON export.
+- Diagnostics dashboard panel for capturing/viewing/exporting CUPS and capability evidence.
 
 Known bugs:
 - See section 18.
@@ -618,12 +629,20 @@ Current problems:
 - Preview layout not applied to backend output.
 - No real print queue monitoring.
 - Unsigned/unnotarized distribution.
+- Native Swift migration is deferred while Tauri is used for real printer research.
+- Full native Xcode verification remains blocked on this machine because `xcodebuild` requires a full Xcode install, not Command Line Tools.
 
 Printer research findings:
 - CUPS is the strongest backend path.
 - Windows path is limited by `PrintTo`.
 - IPP/PPD/PrintCore are not directly implemented.
 - Konica Minolta bizhub C226i behavior must be investigated later from installed driver and printer evidence using native macOS APIs, CUPS, IPP, and PPD/driver evidence where available.
+- Read-only CUPS diagnostic snapshot captured for destination `_10_10_0_25_2`.
+- Captured evidence: macOS `12.7.6`, CPU `x86_64`, CUPS `2.3.4`, default printer `_10_10_0_25_2`.
+- Captured identity evidence: destination `_10_10_0_25_2`, device URI `ipp://10.10.0.25/ipp`, make/model `KONICA MINOLTA C226i PS`, hostname/IP `10.10.0.25`.
+- Captured capability evidence: 135 raw driver options, 45 normalized paper/media sizes, 6 trays/input sources, 70 media types, 3 duplex modes, 3 color modes, 2 resolution/quality choices, and 127 currently unclassified/unknown driver options preserved for later analysis.
+- Captured queue evidence: 0 queued jobs at capture time.
+- Diagnostic snapshot warnings/errors: none reported by the snapshot.
 
 Test environment:
 - Local macOS-like development machine under `/Users/...`.
@@ -631,15 +650,16 @@ Test environment:
 - Rust target/build cache present.
 
 Latest test results:
-- ESLint: pass.
-- TypeScript no-emit: pass.
-- Vite production build to `/private/tmp/printpilot-vite-audit-dist`: pass with warnings.
-- Rust tests: pass, 6/6.
-- Rust check: pass with future-incompat warning for transitive `block v0.1.6`.
+- ESLint: pass (`npm run lint`).
+- TypeScript no-emit: pass (`npx tsc --noEmit`).
+- Vite production build to `/private/tmp/printpilot-vite-diagnostics-dist`: pass with existing warnings for PDF.js eval and large chunks.
+- Rust tests: pass, 12 passed, 1 ignored (`cargo test`). Ignored test is the explicit real-printer diagnostic capture helper.
+- Real diagnostic capture helper: pass when explicitly run for `_10_10_0_25_2`; wrote ignored `.local-diagnostics/_10_10_0_25_2-diagnostics.json`.
+- Rust check: pass (`cargo check`) with future-incompat warning for transitive `block v0.1.6`.
 
 Pending tasks:
-- Create native macOS project shell under `native-macos/`.
-- Add Native PDF Layout Proof domain and geometry tests after Phase 1 approval.
+- Analyze the captured Konica Minolta bizhub C226i raw driver options and classify unknown options into safe normalized categories.
+- Add Native PDF Layout Proof domain and geometry tests after Swift migration resumes.
 - Verify Tauri app bundle locally.
 - Run release workflow from a tag.
 - Add UI/integration tests.
@@ -671,6 +691,7 @@ cd src-tauri && cargo check
 npm run tauri:dev
 npm run tauri:build
 npm run tauri:build:mac
+PRINTPILOT_DIAGNOSTIC_PRINTER=_10_10_0_25_2 PRINTPILOT_DIAGNOSTIC_OUTPUT_DIR=../.local-diagnostics cargo test capture_real_diagnostic_snapshot_when_requested -- --ignored --nocapture
 ```
 
 Current Git branch:
@@ -680,7 +701,7 @@ Latest known-good commit:
 - `b83af2ae00567ce22687621f81060b5ab8f6ace7`
 
 Next step:
-- Create native Xcode project shell in `native-macos/` with SwiftUI app target and XCTest target only.
+- Analyze the captured Konica Minolta bizhub C226i raw driver options and create a classification plan for unknown capabilities without guessing behavior.
 
 Session handoff notes:
 - No source files were modified during the audit.
@@ -688,18 +709,39 @@ Session handoff notes:
 - Build/test verification avoided writing tracked `dist` by redirecting Vite output to `/private/tmp`.
 
 Latest files modified:
-- `PROJECT_STATE.md` only in this audit session.
-- Latest commit modified 196 files, including release workflow, app features, icons, docs, and platform code.
+- `.gitignore`
+- `PROJECT_STATE.md`
+- `src-tauri/src/commands/mod.rs`
+- `src-tauri/src/cups/client.rs`
+- `src-tauri/src/cups/mod.rs`
+- `src-tauri/src/diagnostics/mod.rs`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/models/diagnostics.rs`
+- `src-tauri/src/models/mod.rs`
+- `src-tauri/src/models/printer.rs`
+- `src/features/diagnostics/api.ts`
+- `src/features/diagnostics/components/PrinterDiagnosticsPanel.tsx`
+- `src/features/diagnostics/index.ts`
+- `src/features/diagnostics/types.ts`
+- `src/features/printers/components/PrinterDashboard.tsx`
 
 Latest working behavior:
 - Static verification passes; PDF/printer/job/profile UI compiles.
 - Controlled native migration and Native PDF Layout Proof technical design are approved, with corrected Konica Minolta bizhub C226i identity and shared page drawing contract.
+- Tauri app now includes a read-only diagnostics panel in the printer dashboard.
+- Backend diagnostic subsystem captures host/CUPS environment, selected printer identity, raw CUPS output, raw and normalized capabilities, read-only queue state, command execution records, warnings, and errors.
+- Diagnostic export writes pretty-printed JSON only to a user-selected or explicitly provided path.
 
 Latest unresolved error:
-- No command failed. Remaining issues are product/verification gaps, not current terminal errors.
+- No required verification command failed.
+- Native Xcode build/test remains unverified because the active developer directory is Command Line Tools, not full Xcode.
+- Vite build still reports existing PDF.js eval and large chunk warnings.
+- Rust still reports existing transitive future-incompat warning for `block v0.1.6`.
 
 Uncommitted changes:
-- `PROJECT_STATE.md` added and updated for approved controlled native migration.
+- Diagnostics implementation changes pending commit.
+- `native-macos/` remains untracked from the previous native shell task and is intentionally preserved unchanged.
+- `.local-diagnostics/` contains ignored local machine-specific diagnostic JSON and must not be committed.
 
 Do-not-change notes:
 - Do not submit real print jobs without explicit approval.
@@ -708,6 +750,8 @@ Do-not-change notes:
 - Do not delete, rewrite, or migrate the existing Tauri app until native parity is verified.
 - Do not guess Konica Minolta bizhub C226i capabilities.
 - Do not implement layout domain, PDF importing, printer discovery, PrintCore, CUPS, IPP, or PPD in native Phase 1.
+- Do not commit `.local-diagnostics/` snapshots.
+- Do not classify Konica Minolta bizhub C226i capabilities without captured evidence.
 
 Recommended next action:
-- Create only the native macOS project shell under `native-macos/`.
+- Analyze captured raw Konica Minolta bizhub C226i driver options and design evidence-based normalization mappings.

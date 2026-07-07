@@ -3,6 +3,7 @@ dist
 src-tauri/target
 .DS_Store
 *.log
+.local-diagnostics/
 
 # Local environment / secrets — only .env.example is committed
 .env

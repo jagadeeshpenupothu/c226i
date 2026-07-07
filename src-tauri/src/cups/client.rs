@@ -1,5 +1,6 @@
 use crate::models::PrintSettings;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CupsError {
@@ -17,18 +18,122 @@ pub enum CupsError {
     CommandFailed,
 }
 
-pub fn run_cups_command(program: &str, args: &[&str]) -> Result<String, CupsError> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|_| CupsError::CommandFailed)?;
+#[derive(Debug, Clone)]
+pub struct CupsCommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_status: Option<i32>,
+    pub timed_out: bool,
+    pub duration_ms: u128,
+    pub spawn_error: Option<String>,
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+impl CupsCommandOutput {
+    pub fn success(&self) -> bool {
+        self.exit_status == Some(0) && !self.timed_out && self.spawn_error.is_none()
+    }
+}
+
+pub fn run_cups_command_recorded(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> CupsCommandOutput {
+    let started = Instant::now();
+    let child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            return CupsCommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_status: None,
+                timed_out: false,
+                duration_ms: started.elapsed().as_millis(),
+                spawn_error: Some(error.to_string()),
+            };
+        }
+    };
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child.wait_with_output();
+                return match output {
+                    Ok(output) => CupsCommandOutput {
+                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        exit_status: output.status.code(),
+                        timed_out: false,
+                        duration_ms: started.elapsed().as_millis(),
+                        spawn_error: None,
+                    },
+                    Err(error) => CupsCommandOutput {
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        exit_status: None,
+                        timed_out: false,
+                        duration_ms: started.elapsed().as_millis(),
+                        spawn_error: Some(error.to_string()),
+                    },
+                };
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let output = child.wait_with_output();
+                    return match output {
+                        Ok(output) => CupsCommandOutput {
+                            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                            exit_status: output.status.code(),
+                            timed_out: true,
+                            duration_ms: started.elapsed().as_millis(),
+                            spawn_error: None,
+                        },
+                        Err(error) => CupsCommandOutput {
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            exit_status: None,
+                            timed_out: true,
+                            duration_ms: started.elapsed().as_millis(),
+                            spawn_error: Some(error.to_string()),
+                        },
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                return CupsCommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_status: None,
+                    timed_out: false,
+                    duration_ms: started.elapsed().as_millis(),
+                    spawn_error: Some(error.to_string()),
+                };
+            }
+        }
+    }
+}
+
+pub fn run_cups_command(program: &str, args: &[&str]) -> Result<String, CupsError> {
+    let output = run_cups_command_recorded(program, args, Duration::from_secs(15));
+
+    if !output.success() {
+        if output.spawn_error.is_some() || output.timed_out {
+            return Err(CupsError::CommandFailed);
+        }
+        let stderr = output.stderr.to_lowercase();
         return Err(classify_cups_failure(&stderr));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout)
 }
 
 /// Maps a failed CUPS command's stderr to a specific, user-facing error so the

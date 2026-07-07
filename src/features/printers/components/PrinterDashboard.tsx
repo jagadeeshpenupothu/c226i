@@ -4,6 +4,7 @@ import { ExternalLink, Pause, Play, Printer as PrinterIcon, RefreshCw, X } from 
 import { Badge, Button, Divider, EmptyState, Icon, IconButton, typography } from "@/design";
 import { cn } from "@/lib/utils";
 import { JobStatusBadge, type PrintJob } from "@/features/jobs";
+import { PrinterDiagnosticsPanel } from "@/features/diagnostics/components/PrinterDiagnosticsPanel";
 import { healthDescription, healthIcon, healthLabel, healthTone } from "../printerHealth";
 import { stateDescription } from "../printerStatus";
 import { connectionLabel } from "../printerConnection";
@@ -144,6 +145,10 @@ export function PrinterDashboard({ printerId, capabilitiesLoading = false, onClo
                 ) : (
                   <p className={cn(typography.caption, "text-ink-muted")}>No jobs printed on this printer yet.</p>
                 )}
+              </Section>
+
+              <Section title="Diagnostics">
+                <PrinterDiagnosticsPanel printer={printer} />
               </Section>
             </div>
           )}

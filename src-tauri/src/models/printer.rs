@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityChoice {
     pub value: String,
@@ -8,7 +8,7 @@ pub struct CapabilityChoice {
     pub is_default: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedOption {
     pub keyword: String,
@@ -16,7 +16,7 @@ pub struct ParsedOption {
     pub choices: Vec<CapabilityChoice>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PrinterStatus {
     Online,
@@ -24,7 +24,7 @@ pub enum PrinterStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterInfo {
     pub id: String,
@@ -41,7 +41,7 @@ pub type DuplexMode = CapabilityChoice;
 pub type ColorMode = CapabilityChoice;
 pub type Resolution = CapabilityChoice;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CapabilityCategory {
     Essential,
@@ -51,7 +51,7 @@ pub enum CapabilityCategory {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub enum CapabilityControlType {
@@ -66,7 +66,7 @@ pub enum CapabilityControlType {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub enum CapabilitySource {
@@ -77,7 +77,7 @@ pub enum CapabilitySource {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverCapability {
     pub id: String,
@@ -92,7 +92,7 @@ pub struct DriverCapability {
     pub search_keywords: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterCapabilities {
     pub printer_id: String,

@@ -1,6 +1,7 @@
 mod print;
 mod printer;
 mod diagnostics;
+mod cloud_document;
 
 pub use print::{PdfFileMetadata, PrintRequest, PrintResponse, PrintSettings};
 pub use printer::{
@@ -11,3 +12,4 @@ pub use diagnostics::{
     PrinterCapabilitySnapshot, PrinterDiagnosticIdentity, PrinterDiagnosticSnapshot, QueueJobSnapshot,
     QueueSnapshot, RawCupsData,
 };
+pub use cloud_document::{CloudCacheWriteResponse, PdfValidationResponse};

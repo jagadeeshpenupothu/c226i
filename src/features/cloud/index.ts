@@ -23,10 +23,16 @@ export { CloudAuthError } from "./cloudTypes";
 export { useCloudState, useCloudUser, useSyncState, useNetworkStatus, useSyncQueue } from "./hooks/useCloud";
 export { CloudStatusBadge } from "./components/CloudStatusBadge";
 export { AccountMenu } from "./components/AccountMenu";
-export { GoogleSignInButton } from "./components/GoogleSignInButton";
+export { AuthEntryScreen } from "./components/AuthEntryScreen";
+export { CloudDocumentsDialog } from "./components/CloudDocumentsDialog";
+export { DocumentCloudBadge } from "./components/DocumentCloudBadge";
+export { cloudDocumentService } from "./documents/cloudDocumentService";
+export { guestHistoryRepository } from "./documents/guestHistoryRepository";
+export { useCurrentDocumentCloudState, useGuestHistory } from "./documents/hooks";
 
 // Types
 export type { CloudUser, CloudState, CloudProviderId, CloudResult, CloudError, CloudErrorCode, SubscriptionTier } from "./cloudTypes";
+export type { CloudDocument, GuestHistoryItem, DocumentOrigin } from "./documents/documentTypes";
 export type { NetworkStatus } from "./network/networkMonitor";
 export type { SyncState, SyncStatus, SyncOperation, SyncOperationType, SyncOperationStatus, SyncEntity } from "./sync/syncTypes";
 export type { EnqueueInput } from "./queue/syncQueue";

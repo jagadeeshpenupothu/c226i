@@ -11,7 +11,19 @@ import type { PdfFile } from "@/features/pdf/types";
 import { jobManager, useActiveJobCount, JobsDialog } from "@/features/jobs";
 import { printerManager, usePrinters, usePrinterCapabilities, usePrinterDiscovery, startNotificationWatchers, notify, PrinterDashboard, NotificationCenter } from "@/features/printers";
 import { toastManager, ToastViewport } from "@/features/notifications";
-import { bootstrapCloud, AccountMenu } from "@/features/cloud";
+import {
+  bootstrapCloud,
+  AccountMenu,
+  AuthEntryScreen,
+  CloudDocumentsDialog,
+  DocumentCloudBadge,
+  cloudDocumentService,
+  guestHistoryRepository,
+  useCloudState,
+  useCloudUser,
+  type CloudDocument,
+  type DocumentOrigin
+} from "@/features/cloud";
 import { profileManager, ProfileLibrary, CompatibilityWarningsDialog, type PrintProfile, type CompatibilityWarning, type ProfileCapabilitySnapshot } from "@/features/profiles";
 import type { CapabilityChoice, PrinterCapabilities } from "@/features/printers/types";
 import { SettingsPanel } from "@/features/settings/settingsPanel";
@@ -68,11 +80,13 @@ function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || "Document.pdf";
 }
 
-function pdfFromPath(path: string): PdfFile {
+function pdfFromPath(path: string, origin: DocumentOrigin = "guest-local-import", cloudDocumentId?: string): PdfFile {
   return {
     name: fileNameFromPath(path),
     path,
-    previewUrl: convertFileSrc(path)
+    previewUrl: convertFileSrc(path),
+    origin,
+    cloudDocumentId
   };
 }
 
@@ -190,7 +204,11 @@ function readStoredLayout(): PrintLayout {
 export default function App() {
   const splitRef = useRef<HTMLElement | null>(null);
   const currentPathRef = useRef<string | null>(null);
+  const archivedPathRef = useRef<string | null>(null);
   const [pdfFile, setPdfFile] = useState<PdfFile | null>(null);
+  const cloudState = useCloudState();
+  const cloudUser = useCloudUser();
+  const [enteredApp, setEnteredApp] = useState(false);
   // Printer domain — the PrinterStore/Manager are the single source of truth.
   const printers = usePrinters();
   const [settings, setSettings] = useState<PrintSettings>(readStoredSettings);
@@ -205,6 +223,7 @@ export default function App() {
   const [isProfilesOpen, setIsProfilesOpen] = useState(false);
   const [profileWarnings, setProfileWarnings] = useState<{ profileName: string; warnings: CompatibilityWarning[] } | null>(null);
   const [isJobsOpen, setIsJobsOpen] = useState(false);
+  const [isCloudDocumentsOpen, setIsCloudDocumentsOpen] = useState(false);
   // Which job the Jobs dialog should focus — set when a job toast is clicked.
   const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
   const [isPrinterDashboardOpen, setIsPrinterDashboardOpen] = useState(false);
@@ -250,6 +269,20 @@ export default function App() {
   useEffect(() => {
     currentPathRef.current = pdfFile?.path ?? null;
   }, [pdfFile]);
+
+  useEffect(() => {
+    if (!pdfFile?.path || !cloudUser || pdfFile.origin !== "authenticated-local-import") return;
+    const key = `${cloudUser.id}:${pdfFile.path}`;
+    if (archivedPathRef.current === key) return;
+    archivedPathRef.current = key;
+    cloudDocumentService.archiveAuthenticatedLocalPdf({
+      path: pdfFile.path,
+      fileName: pdfFile.name,
+      pageCount: documentPageCount || null,
+      user: cloudUser,
+      origin: pdfFile.origin
+    });
+  }, [cloudUser, documentPageCount, pdfFile]);
 
   // Remember the last session's printer + settings.
   useEffect(() => {
@@ -342,11 +375,18 @@ export default function App() {
   }, []);
 
   const selectPdfPath = useCallback(
-    (path: string) => {
-      setPdfFile(pdfFromPath(path));
+    (path: string, origin: DocumentOrigin = cloudUser ? "authenticated-local-import" : "guest-local-import", cloudDocumentId?: string) => {
+      const file = pdfFromPath(path, origin, cloudDocumentId);
+      setPdfFile(file);
       addRecentFile(path);
+      if (origin === "guest-local-import") {
+        void guestHistoryRepository.recordLocalPdf(path, null);
+      }
+      if (origin === "authenticated-local-import") {
+        archivedPathRef.current = null;
+      }
     },
-    [addRecentFile]
+    [addRecentFile, cloudUser]
   );
 
   // Opens the Print Jobs dialog focused on a specific job (from a job toast).
@@ -395,7 +435,7 @@ export default function App() {
     if (!last) return;
     let cancelled = false;
     readPdfFileMetadata({ name: last.name, path: last.path, previewUrl: "" }).then((metadata) => {
-      if (!cancelled && metadata) setPdfFile(pdfFromPath(last.path));
+      if (!cancelled && metadata) setPdfFile(pdfFromPath(last.path, "app-cache-reopen"));
     });
     return () => {
       cancelled = true;
@@ -580,6 +620,10 @@ export default function App() {
         ? { tone: "error" as const, label: "Offline" }
         : { tone: "idle" as const, label: "Unknown" };
 
+  if (cloudState.initialized && !cloudUser && !enteredApp) {
+    return <AuthEntryScreen onContinue={() => setEnteredApp(true)} />;
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-app p-2 text-foreground sm:p-3 md:p-4">
       <div className="mx-auto flex h-full max-w-[2200px] flex-col gap-2 md:gap-3">
@@ -602,6 +646,9 @@ export default function App() {
                   <p className={`${typography.caption} text-ink-muted`}>
                     {documentPageCount ? `${documentPageCount} ${documentPageCount === 1 ? "page" : "pages"} · PDF` : "PDF document"}
                   </p>
+                  <div className="mt-1">
+                    <DocumentCloudBadge path={pdfFile.path} />
+                  </div>
                 </>
               ) : (
                 <p className={`${typography.bodySmall} text-ink-muted`}>No document open</p>
@@ -642,7 +689,7 @@ export default function App() {
             <IconButton icon={Bookmark} label="Print profiles" onClick={() => setIsProfilesOpen(true)} />
             <IconButton icon={History} label="Print history" onClick={() => setIsHistoryOpen(true)} />
             <Divider orientation="vertical" className="h-6" />
-            <AccountMenu />
+            <AccountMenu onOpenCloudDocuments={() => setIsCloudDocumentsOpen(true)} />
           </div>
         </header>
 
@@ -753,6 +800,15 @@ export default function App() {
           onRemove={removeRecentFile}
           onClear={clearRecentFiles}
           onClose={() => setIsRecentOpen(false)}
+        />
+      )}
+
+      {isCloudDocumentsOpen && (
+        <CloudDocumentsDialog
+          onClose={() => setIsCloudDocumentsOpen(false)}
+          onOpenPath={(path, document: CloudDocument) => {
+            selectPdfPath(path, "cloud-library-download", document.documentId);
+          }}
         />
       )}
 

@@ -5,7 +5,9 @@ import { networkMonitor, type NetworkStatus } from "./network/networkMonitor";
 import { syncQueue, type EnqueueInput } from "./queue/syncQueue";
 import type { CloudProvider } from "./providers/cloudProvider";
 import type { AuthMethod } from "./auth/authTypes";
+import type { EmailPasswordCredentials } from "./auth/authTypes";
 import type { SyncOperation, SyncStatus } from "./sync/syncTypes";
+import type { CloudDocument, CloudDocumentLibrarySnapshot, CloudReservationResult } from "./documents/documentTypes";
 
 // The single orchestration surface the app uses for anything cloud-related.
 //
@@ -118,6 +120,30 @@ class CloudManager {
     }
   }
 
+  async signInWithEmail(credentials: EmailPasswordCredentials): Promise<CloudResult<CloudUser>> {
+    if (!this.provider) return { ok: false, error: { code: "not-configured", message: "No cloud provider registered." } };
+    try {
+      const user = await this.provider.auth.signInWithEmail(credentials);
+      cloudStore.update({ user });
+      this.refreshSyncSnapshot();
+      return { ok: true, value: user };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async signUpWithEmail(credentials: EmailPasswordCredentials): Promise<CloudResult<CloudUser>> {
+    if (!this.provider) return { ok: false, error: { code: "not-configured", message: "No cloud provider registered." } };
+    try {
+      const user = await this.provider.auth.signUpWithEmail(credentials);
+      cloudStore.update({ user });
+      this.refreshSyncSnapshot();
+      return { ok: true, value: user };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
   async signOut(): Promise<CloudResult<void>> {
     if (!this.provider) {
       cloudStore.update({ user: null });
@@ -152,6 +178,91 @@ class CloudManager {
   resumeSync(): void {
     syncQueue.resume();
     this.refreshSyncSnapshot();
+  }
+
+  async listCloudDocuments(): Promise<CloudResult<CloudDocumentLibrarySnapshot>> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to view cloud documents." } };
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud documents are not configured." } };
+    try {
+      return { ok: true, value: await this.provider.documents.listDocuments(user.id) };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async getCloudStorageUsage(): Promise<CloudResult<CloudDocumentLibrarySnapshot["quota"]>> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to view storage usage." } };
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud storage is not configured." } };
+    try {
+      return { ok: true, value: await this.provider.documents.getStorageUsage(user.id) };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async reserveCloudUpload(input: Omit<Parameters<NonNullable<CloudProvider["documents"]>["reserveUpload"]>[0], "ownerUid">): Promise<CloudResult<CloudReservationResult>> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to archive PDFs." } };
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
+    try {
+      return { ok: true, value: await this.provider.documents.reserveUpload({ ...input, ownerUid: user.id }) };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async uploadCloudPdf(input: Parameters<NonNullable<CloudProvider["documents"]>["uploadPdf"]>[0]): Promise<CloudResult<void>> {
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
+    try {
+      await this.provider.documents.uploadPdf(input);
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async finalizeCloudUpload(input: Omit<Parameters<NonNullable<CloudProvider["documents"]>["finalizeUpload"]>[0], "ownerUid">): Promise<CloudResult<CloudDocument>> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to archive PDFs." } };
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
+    try {
+      return { ok: true, value: await this.provider.documents.finalizeUpload({ ...input, ownerUid: user.id }) };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async getCloudDocumentDownloadUrl(document: CloudDocument): Promise<CloudResult<string>> {
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
+    try {
+      return { ok: true, value: await this.provider.documents.getDownloadUrl(document) };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
+  async markCloudDocumentOpened(documentId: string): Promise<void> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user || !this.provider?.documents) return;
+    try {
+      await this.provider.documents.markOpened(user.id, documentId);
+    } catch {
+      // Non-critical metadata update; never block local open/print.
+    }
+  }
+
+  async deleteCloudDocument(document: CloudDocument): Promise<CloudResult<void>> {
+    const { user } = cloudStore.getSnapshot();
+    if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to delete cloud documents." } };
+    if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
+    try {
+      await this.provider.documents.deleteDocument(user.id, document);
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
   }
 
   // --- conflict strategy ----------------------------------------------------

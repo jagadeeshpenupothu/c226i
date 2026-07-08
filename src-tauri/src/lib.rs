@@ -35,6 +35,10 @@ pub fn run() {
             commands::list_printers,
             commands::get_printer_capabilities,
             commands::get_pdf_file_metadata,
+            commands::validate_pdf_for_cloud,
+            commands::resolve_cloud_pdf_cache_path,
+            commands::download_cloud_pdf_to_cache,
+            commands::remove_cloud_cached_pdf,
             commands::print_pdf,
             commands::capture_diagnostic_snapshot,
             commands::export_diagnostic_snapshot

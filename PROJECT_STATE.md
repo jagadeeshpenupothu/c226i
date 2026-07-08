@@ -844,3 +844,63 @@ Do-not-change notes:
 
 Recommended next action:
 - Analyze captured raw Konica Minolta bizhub C226i driver options and design evidence-based normalization mappings.
+
+## 27. Auth, Guest History, and Cloud PDF Archive Update
+
+Update date: 2026-07-08
+
+New immediate priority implemented in the existing Tauri + React + TypeScript + Rust app:
+
+- Launch entry now supports Sign In, Sign Up, and Continue to Print.
+- Email/password Firebase authentication is wired behind the existing provider adapter.
+- Restored Firebase sessions enter the main app directly; guest users can continue without cloud.
+- The top-right account menu now shows guest sign-in/sign-up controls or signed-in identity, Cloud Documents, storage usage, and Sign Out.
+- Delete Account, Google, Apple, subscriptions, sharing, and collaboration were intentionally not added.
+- Guest/local PDF opens are recorded in persistent local guest history and existing recent-file validation still checks that reopened files are valid local PDFs.
+- Signed-in local PDF opens trigger a background cloud archive attempt without blocking preview or printing.
+- Cloud archive validates PDF existence/type/size, enforces the 500 MB limit, computes SHA-256 in Rust with streaming I/O, reserves quota through a trusted function, uploads privately to Firebase Storage, finalizes metadata, and exposes retry/status UI.
+- Cloud document opens download to an app cache through Rust, verify SHA-256, and re-enter the existing local PDF workflow with explicit cloud origin.
+- Cloud document delete uses a confirmation and trusted server-side metadata/storage/quota cleanup, without closing the currently open local copy.
+
+New files and configuration:
+
+- `src/features/cloud/components/AuthEntryScreen.tsx`
+- `src/features/cloud/components/CloudDocumentsDialog.tsx`
+- `src/features/cloud/components/DocumentCloudBadge.tsx`
+- `src/features/cloud/documents/*`
+- `src-tauri/src/models/cloud_document.rs`
+- `firebase.json`
+- `firestore.rules`
+- `storage.rules`
+- `firestore.indexes.json`
+- `functions/*`
+- `docs/FIREBASE_CLOUD_ARCHIVE.md`
+
+Cloud security model:
+
+- Firestore document and quota writes are denied to clients.
+- Storage access is scoped to `users/{uid}/documents/{documentId}/original.pdf`.
+- Trusted Cloud Functions handle reservation, duplicate detection, finalization, deletion, and quota accounting.
+- Deduplication is per-user SHA-256 only; there is no cross-user deduplication.
+
+Latest verification for this update:
+
+- `npx tsc --noEmit`: pass.
+- `npm run lint`: pass.
+- `npx vite build --outDir /private/tmp/printpilot-auth-vite-dist --emptyOutDir`: pass with known PDF.js eval and large chunk warnings.
+- `cd src-tauri && cargo check`: pass with known transitive `block v0.1.6` future-incompat warning.
+- `cd src-tauri && cargo test`: pass, 12 passed and 1 ignored.
+- `npm --prefix functions run build`: pass.
+- `npm audit --prefix functions --audit-level=high`: pass high-severity gate; reports moderate transitive `uuid` advisories in the Firebase Admin dependency graph. The automatic fix currently requires `firebase-admin@14`, but the latest Firebase Functions SDK peer range supports Firebase Admin only through v13.
+
+Remaining blockers and limits:
+
+- Firebase emulators/security-rules tests were not added or run.
+- Firebase deployment, billing enablement, budget alerts, App Check, and production project setup remain blocked pending explicit approval.
+- Cloud upload still uses the Firebase Web SDK Blob upload path after Rust validation/hash; a future hardening pass should replace this with native streaming upload or signed URL streaming.
+- No real cloud E2E upload/download/delete test was performed against a live Firebase project.
+- Native macOS work remains untouched.
+
+Recommended next action:
+
+- Add Firebase emulator tests for auth boundaries, cross-user denial, quota exhaustion, duplicate handling, oversize rejection, stale reservation cleanup, and cloud delete accounting before any production Firebase deployment.

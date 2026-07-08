@@ -5,11 +5,12 @@
 // arrives in a later phase behind these same types.
 
 export type AuthMethod =
-  | "google" // Phase 9
+  | "email"
+  | "google" // future
   | "microsoft" // future
   | "github" // future
   | "sso" // future — enterprise SSO
-  | "password" // future
+  | "password"
   | "anonymous"; // local-only / not signed in
 
 export interface AuthMethodDescriptor {
@@ -37,4 +38,9 @@ export interface AuthSession {
   method: AuthMethod;
   issuedAt: string; // ISO
   expiresAt: string | null; // ISO, null = provider-managed
+}
+
+export interface EmailPasswordCredentials {
+  email: string;
+  password: string;
 }

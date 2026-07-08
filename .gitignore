@@ -4,6 +4,11 @@ src-tauri/target
 .DS_Store
 *.log
 .local-diagnostics/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+functions/lib/
 
 # Local environment / secrets — only .env.example is committed
 .env

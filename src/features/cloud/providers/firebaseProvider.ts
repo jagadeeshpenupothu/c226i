@@ -1,43 +1,32 @@
-// FirebaseProvider — the ONLY file in the app that imports the Firebase SDK.
-//
-// Everything above this file depends solely on the CloudProvider interfaces, so
-// the rest of PrintPilot is unaware Firebase exists. Swapping to Supabase /
-// Appwrite / Azure means writing a sibling provider and changing one line in the
-// cloud bootstrap — no business-logic changes.
-//
-// This phase implements Google authentication only. Sync + storage remain
-// stubbed (Phase 10: Google Drive Storage & Cloud Sync).
-//
-// SECURITY: auth persistence is IN-MEMORY on purpose (`inMemoryPersistence`), so
-// the SDK never writes tokens to IndexedDB / localStorage / sessionStorage.
-// Rotated id/refresh tokens are mirrored into the SecureTokenStorage abstraction
-// instead, so a future keychain-backed implementation (Tauri Stronghold, OS
-// Keychain, Windows Credential Manager, macOS Keychain, Linux Secret Service)
-// can enable cross-restart session restore without any change above this file.
+// FirebaseProvider is the only app file that imports Firebase SDK modules.
 
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import {
-  GoogleAuthProvider,
+  browserLocalPersistence,
   browserPopupRedirectResolver,
+  createUserWithEmailAndPassword,
   getAuth,
-  inMemoryPersistence,
   initializeAuth,
   onAuthStateChanged,
   onIdTokenChanged,
-  signInWithPopup,
+  signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   type Auth,
   type User
 } from "firebase/auth";
+import { collection, doc, getDoc, getDocs, getFirestore, limit, orderBy, query, serverTimestamp, updateDoc, where, type Firestore, type Timestamp } from "firebase/firestore";
+import { getFunctions, httpsCallable, type Functions } from "firebase/functions";
+import { deleteObject, getDownloadURL, getStorage, ref, uploadBytesResumable, type FirebaseStorage } from "firebase/storage";
 import { CloudAuthError, NotImplementedError, type CloudUser } from "../cloudTypes";
 import type { AuthenticationProvider } from "../auth/authProvider";
-import type { AuthMethod, AuthMethodDescriptor } from "../auth/authTypes";
+import type { AuthMethod, AuthMethodDescriptor, EmailPasswordCredentials } from "../auth/authTypes";
 import type { SyncProvider, SyncPullResult, SyncPushResult } from "../sync/syncProvider";
+import { CLOUD_USER_QUOTA_BYTES } from "../documents/constants";
+import type { CloudDocumentProvider } from "../documents/cloudDocumentProvider";
+import type { CloudDocument, CloudDocumentLibrarySnapshot, CloudQuotaSnapshot, CloudReservationResult } from "../documents/documentTypes";
 import { InMemorySecureTokenStorage, type SecureTokenStorage, type StorageObject, type StorageProvider } from "../storage/storageProvider";
 import type { CloudProvider, CloudProviderMetadata } from "./cloudProvider";
 
-// Plain configuration shape (structurally compatible with FirebaseOptions) so
-// the composition root can pass config without importing the Firebase SDK.
 export interface FirebaseConfig {
   apiKey: string;
   authDomain: string;
@@ -51,8 +40,6 @@ export interface FirebaseConfig {
 const TOKEN_ID = "firebase.idToken";
 const TOKEN_REFRESH = "firebase.refreshToken";
 
-// --- Firebase → normalized model mapping -----------------------------------
-
 function toIso(value: string | undefined): string {
   if (!value) return new Date().toISOString();
   const time = new Date(value).getTime();
@@ -61,13 +48,10 @@ function toIso(value: string | undefined): string {
 
 function mapAuthMethod(user: User): AuthMethod {
   const providerId = user.providerData[0]?.providerId ?? "";
-  if (providerId.includes("google")) return "google";
-  if (providerId.includes("microsoft")) return "microsoft";
-  if (providerId.includes("github")) return "github";
-  return "google";
+  if (providerId.includes("password")) return "email";
+  return "email";
 }
 
-// The single place a Firebase User becomes the app's provider-agnostic CloudUser.
 function mapFirebaseUser(user: User): CloudUser {
   return {
     id: user.uid,
@@ -83,34 +67,34 @@ function mapFirebaseUser(user: User): CloudUser {
   };
 }
 
-// Firebase auth error codes → provider-agnostic, user-friendly CloudAuthError.
 function mapFirebaseAuthError(error: unknown): CloudAuthError {
   const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
   switch (code) {
-    case "auth/popup-closed-by-user":
-    case "auth/cancelled-popup-request":
-    case "auth/user-cancelled":
-      return new CloudAuthError("cancelled", "Sign-in was cancelled.");
-    case "auth/popup-blocked":
-      return new CloudAuthError("popup-blocked", "The sign-in window was blocked. Allow pop-ups and try again.");
     case "auth/network-request-failed":
       return new CloudAuthError("offline", "No internet connection. Check your network and try again.");
-    case "auth/timeout":
-      return new CloudAuthError("timeout", "Sign-in timed out. Please try again.");
     case "auth/invalid-api-key":
     case "auth/configuration-not-found":
     case "auth/operation-not-allowed":
-      return new CloudAuthError("not-configured", "Google sign-in isn't configured for this app yet.");
+      return new CloudAuthError("not-configured", "Email/password sign-in is not configured for this app yet.");
+    case "auth/email-already-in-use":
+      return new CloudAuthError("conflict", "An account already exists for this email.");
+    case "auth/invalid-credential":
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+      return new CloudAuthError("unauthenticated", "Email or password is incorrect.");
+    case "auth/weak-password":
+      return new CloudAuthError("unknown", "Use a stronger password.");
+    case "auth/invalid-email":
+      return new CloudAuthError("unknown", "Enter a valid email address.");
     default:
-      return new CloudAuthError("unknown", "Couldn't sign in. Please try again.");
+      return new CloudAuthError("unknown", "Authentication failed. Please try again.");
   }
 }
 
-// --- Authentication --------------------------------------------------------
-
 class FirebaseAuthProvider implements AuthenticationProvider {
   readonly supportedMethods: AuthMethodDescriptor[] = [
-    { method: "google", label: "Google", available: true },
+    { method: "email", label: "Email", available: true },
+    { method: "google", label: "Google", available: false },
     { method: "microsoft", label: "Microsoft", available: false },
     { method: "github", label: "GitHub", available: false },
     { method: "sso", label: "Enterprise SSO", available: false }
@@ -124,8 +108,6 @@ class FirebaseAuthProvider implements AuthenticationProvider {
   constructor(auth: Auth, tokens: SecureTokenStorage) {
     this.auth = auth;
     this.tokens = tokens;
-    // Resolves once Firebase has reported its initial auth state — this is the
-    // "silent sign-in" / session-restore signal.
     this.ready = new Promise((resolve) => {
       const unsub = onAuthStateChanged(
         this.auth,
@@ -142,13 +124,24 @@ class FirebaseAuthProvider implements AuthenticationProvider {
   }
 
   async signIn(method: AuthMethod): Promise<CloudUser> {
-    if (method !== "google") {
-      throw new CloudAuthError("not-implemented", `Sign-in with "${method}" isn't available yet.`);
+    if (method !== "email") {
+      throw new CloudAuthError("not-implemented", `Sign-in with "${method}" is not available.`);
     }
+    throw new CloudAuthError("not-implemented", "Use email/password sign-in.");
+  }
+
+  async signInWithEmail({ email, password }: EmailPasswordCredentials): Promise<CloudUser> {
     try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: "select_account" });
-      const result = await signInWithPopup(this.auth, provider);
+      const result = await signInWithEmailAndPassword(this.auth, email.trim(), password);
+      return mapFirebaseUser(result.user);
+    } catch (error) {
+      throw mapFirebaseAuthError(error);
+    }
+  }
+
+  async signUpWithEmail({ email, password }: EmailPasswordCredentials): Promise<CloudUser> {
+    try {
+      const result = await createUserWithEmailAndPassword(this.auth, email.trim(), password);
       return mapFirebaseUser(result.user);
     } catch (error) {
       throw mapFirebaseAuthError(error);
@@ -160,7 +153,6 @@ class FirebaseAuthProvider implements AuthenticationProvider {
     await this.tokens.clear();
   }
 
-  // Silent restore: returns the current session if Firebase has one, else null.
   async getCurrentUser(): Promise<CloudUser | null> {
     await this.ready;
     return this.auth.currentUser ? mapFirebaseUser(this.auth.currentUser) : null;
@@ -180,7 +172,6 @@ class FirebaseAuthProvider implements AuthenticationProvider {
     return onAuthStateChanged(this.auth, (user) => listener(user ? mapFirebaseUser(user) : null));
   }
 
-  // Mirror rotated tokens into SecureTokenStorage (never browser storage).
   startTokenSync(): void {
     if (this.tokenUnsub) return;
     this.tokenUnsub = onIdTokenChanged(this.auth, (user) => {
@@ -203,12 +194,10 @@ class FirebaseAuthProvider implements AuthenticationProvider {
       await this.tokens.setToken(TOKEN_ID, idToken);
       if (user.refreshToken) await this.tokens.setToken(TOKEN_REFRESH, user.refreshToken);
     } catch {
-      // Best-effort — a failed token persist must never break authentication.
+      // Token mirroring is best-effort and never logged.
     }
   }
 }
-
-// --- Sync + Storage (still stubbed — Phase 10) -----------------------------
 
 class FirebaseSyncProvider implements SyncProvider {
   async push(): Promise<SyncPushResult[]> {
@@ -242,26 +231,135 @@ class FirebaseStorageProvider implements StorageProvider {
   }
 }
 
-// --- Composite provider ----------------------------------------------------
+function timestampToIso(value: unknown): string {
+  if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    return (value as Timestamp).toDate().toISOString();
+  }
+  if (typeof value === "string") return value;
+  return new Date().toISOString();
+}
+
+function mapCloudDocument(data: Record<string, unknown>, documentId: string): CloudDocument {
+  return {
+    schemaVersion: Number(data.schemaVersion || 1),
+    documentId,
+    ownerUid: String(data.ownerUid || ""),
+    sha256: String(data.sha256 || ""),
+    originalFileName: String(data.originalFileName || "Document.pdf"),
+    displayName: String(data.displayName || data.originalFileName || "Document.pdf"),
+    contentType: "application/pdf",
+    byteSize: Number(data.byteSize || 0),
+    pageCount: typeof data.pageCount === "number" ? data.pageCount : null,
+    storagePath: String(data.storagePath || ""),
+    status: (data.status as CloudDocument["status"]) || "synced",
+    createdAt: timestampToIso(data.createdAt),
+    updatedAt: timestampToIso(data.updatedAt),
+    lastOpenedAt: data.lastOpenedAt ? timestampToIso(data.lastOpenedAt) : null
+  };
+}
+
+class FirebaseCloudDocumentProvider implements CloudDocumentProvider {
+  private readonly db: Firestore;
+  private readonly storage: FirebaseStorage;
+  private readonly functions: Functions;
+
+  constructor(app: FirebaseApp) {
+    this.db = getFirestore(app);
+    this.storage = getStorage(app);
+    this.functions = getFunctions(app);
+  }
+
+  async listDocuments(ownerUid: string): Promise<CloudDocumentLibrarySnapshot> {
+    const documentsQuery = query(
+      collection(this.db, "users", ownerUid, "documents"),
+      where("ownerUid", "==", ownerUid),
+      orderBy("updatedAt", "desc"),
+      limit(200)
+    );
+    const [snapshot, quota] = await Promise.all([getDocs(documentsQuery), this.getStorageUsage(ownerUid)]);
+    return {
+      documents: snapshot.docs.map((entry) => mapCloudDocument(entry.data(), entry.id)),
+      quota
+    };
+  }
+
+  async getStorageUsage(ownerUid: string): Promise<CloudQuotaSnapshot> {
+    const snapshot = await getDoc(doc(this.db, "users", ownerUid, "account", "quota"));
+    const data = snapshot.exists() ? snapshot.data() : {};
+    return {
+      usedBytes: Number(data.usedBytes || 0),
+      quotaBytes: Number(data.quotaBytes || CLOUD_USER_QUOTA_BYTES),
+      reservedBytes: Number(data.reservedBytes || 0)
+    };
+  }
+
+  async reserveUpload(input: Parameters<CloudDocumentProvider["reserveUpload"]>[0]): Promise<CloudReservationResult> {
+    const callable = httpsCallable<typeof input, CloudReservationResult>(this.functions, "reservePdfArchive");
+    const result = await callable(input);
+    return result.data;
+  }
+
+  async uploadPdf({ storagePath, file, onProgress }: Parameters<CloudDocumentProvider["uploadPdf"]>[0]): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const task = uploadBytesResumable(ref(this.storage, storagePath), file, {
+        contentType: "application/pdf",
+        customMetadata: { printpilotContent: "pdf" }
+      });
+      task.on(
+        "state_changed",
+        (snapshot) => onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)),
+        reject,
+        () => resolve()
+      );
+    });
+  }
+
+  async finalizeUpload(input: Parameters<CloudDocumentProvider["finalizeUpload"]>[0]): Promise<CloudDocument> {
+    const callable = httpsCallable<typeof input, CloudDocument>(this.functions, "finalizePdfArchive");
+    const result = await callable(input);
+    return result.data;
+  }
+
+  async getDownloadUrl(document: CloudDocument): Promise<string> {
+    return getDownloadURL(ref(this.storage, document.storagePath));
+  }
+
+  async markOpened(ownerUid: string, documentId: string): Promise<void> {
+    await updateDoc(doc(this.db, "users", ownerUid, "documents", documentId), {
+      lastOpenedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  }
+
+  async deleteDocument(ownerUid: string, document: CloudDocument): Promise<void> {
+    const callable = httpsCallable<{ ownerUid: string; documentId: string }, { ok: true }>(this.functions, "deletePdfArchive");
+    await callable({ ownerUid, documentId: document.documentId });
+    try {
+      await deleteObject(ref(this.storage, document.storagePath));
+    } catch {
+      // Server-side function owns consistency and cleanup.
+    }
+  }
+}
 
 export class FirebaseProvider implements CloudProvider {
   readonly metadata: CloudProviderMetadata;
   readonly auth: FirebaseAuthProvider;
   readonly sync: SyncProvider = new FirebaseSyncProvider();
   readonly storage: StorageProvider = new FirebaseStorageProvider();
+  readonly documents: CloudDocumentProvider;
   readonly tokens: SecureTokenStorage;
   private readonly app: FirebaseApp;
 
   constructor(config: FirebaseConfig, tokens: SecureTokenStorage = new InMemorySecureTokenStorage()) {
     this.tokens = tokens;
-    // Idempotent across StrictMode remounts / HMR — reuse the default app if it
-    // already exists rather than throwing "app already exists".
     this.app = getApps().length ? getApp() : initializeApp(config);
     this.auth = new FirebaseAuthProvider(resolveAuth(this.app), tokens);
+    this.documents = new FirebaseCloudDocumentProvider(this.app);
     this.metadata = {
       id: "firebase",
       label: "Firebase",
-      capabilities: { auth: true, sync: false, storage: false, realtime: false },
+      capabilities: { auth: true, sync: true, storage: true, realtime: false },
       configured: true
     };
   }
@@ -279,12 +377,10 @@ export class FirebaseProvider implements CloudProvider {
   }
 }
 
-// Initialize Auth with in-memory persistence + a popup resolver. Falls back to
-// getAuth() if Auth was already initialized on this app (remount / HMR).
 function resolveAuth(app: FirebaseApp): Auth {
   try {
     return initializeAuth(app, {
-      persistence: inMemoryPersistence,
+      persistence: browserLocalPersistence,
       popupRedirectResolver: browserPopupRedirectResolver
     });
   } catch {

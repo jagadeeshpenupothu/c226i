@@ -1,5 +1,5 @@
 import type { CloudUser } from "../cloudTypes";
-import type { AuthMethod, AuthMethodDescriptor } from "./authTypes";
+import type { AuthMethod, AuthMethodDescriptor, EmailPasswordCredentials } from "./authTypes";
 
 // The only surface the app (via cloudManager) uses to authenticate. A concrete
 // backend implements this in a later phase; today only stubs exist. Business
@@ -10,6 +10,10 @@ export interface AuthenticationProvider {
 
   // Begin a sign-in. Concrete providers open the OAuth flow; the stub rejects.
   signIn(method: AuthMethod): Promise<CloudUser>;
+
+  signInWithEmail(credentials: EmailPasswordCredentials): Promise<CloudUser>;
+
+  signUpWithEmail(credentials: EmailPasswordCredentials): Promise<CloudUser>;
 
   signOut(): Promise<void>;
 

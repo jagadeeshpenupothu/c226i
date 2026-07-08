@@ -2,6 +2,7 @@ import type { CloudProviderId } from "../cloudTypes";
 import type { AuthenticationProvider } from "../auth/authProvider";
 import type { SyncProvider } from "../sync/syncProvider";
 import type { SecureTokenStorage, StorageProvider } from "../storage/storageProvider";
+import type { CloudDocumentProvider } from "../documents/cloudDocumentProvider";
 
 export interface CloudProviderCapabilities {
   auth: boolean;
@@ -28,6 +29,7 @@ export interface CloudProvider {
   readonly auth: AuthenticationProvider;
   readonly sync: SyncProvider;
   readonly storage: StorageProvider;
+  readonly documents?: CloudDocumentProvider;
   readonly tokens: SecureTokenStorage;
 
   // Prepare the provider (SDK init, restore a session). A safe no-op for stubs.

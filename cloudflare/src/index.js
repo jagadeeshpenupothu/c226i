@@ -1,5 +1,15 @@
 import { verifyFirebaseIdToken } from "./auth.js";
-import { ArchiveError, finalizeArchiveDocument, reserveArchiveDocument } from "./archiveRepository.js";
+import {
+  abandonArchiveReservation,
+  ArchiveError,
+  deleteArchiveDocument,
+  finalizeArchiveDocument,
+  getAccountQuota,
+  getArchiveDocumentStatus,
+  getArchiveDownload,
+  listArchiveDocuments,
+  reserveArchiveDocument
+} from "./archiveRepository.js";
 import {
   abortMultipartUpload,
   completeMultipartUpload,
@@ -34,6 +44,19 @@ function errorResponse(error) {
     return json({ ok: false, error: error.code }, error.status);
   }
   return json({ ok: false, error: "internal_error" }, 500);
+}
+
+function streamPdfDownload(document, object) {
+  const headers = new Headers({
+    "content-type": "application/pdf",
+    "cache-control": "private, no-store",
+    "content-disposition": `attachment; filename="${document.originalFileName.replace(/["\\]/g, "_")}"`
+  });
+  if (Number.isSafeInteger(object.size)) {
+    headers.set("content-length", String(object.size));
+  }
+  object.writeHttpMetadata?.(headers);
+  return new Response(object.body, { headers });
 }
 
 async function authenticate(request, env) {
@@ -140,6 +163,10 @@ async function fetch(request, env) {
   const url = new URL(request.url);
   const uploadRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/upload(?:\/([^/]+)(?:\/([^/]+))?)?$/);
   const finalizeRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/finalize$/);
+  const downloadRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/download$/);
+  const statusRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/status$/);
+  const abandonRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/abandon$/);
+  const documentRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)$/);
 
   if (request.method === "GET" && url.pathname === "/health") {
     return json({
@@ -177,11 +204,77 @@ async function fetch(request, env) {
     }
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/documents") {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await listArchiveDocuments(env.PRINTPILOT_DB, auth.uid);
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/account/quota") {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const quota = await getAccountQuota(env.PRINTPILOT_DB, auth.uid);
+      return json({ ok: true, quota });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
   if (request.method === "POST" && finalizeRoute) {
     const auth = await authenticate(request, env);
     if (!auth) return unauthorized();
     try {
       const result = await finalizeArchiveDocument(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, finalizeRoute[1]);
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "GET" && statusRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await getArchiveDocumentStatus(env.PRINTPILOT_DB, auth.uid, statusRoute[1]);
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "GET" && downloadRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await getArchiveDownload(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, downloadRoute[1]);
+      return streamPdfDownload(result.document, result.object);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "DELETE" && documentRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await deleteArchiveDocument(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, documentRoute[1]);
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "POST" && abandonRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await abandonArchiveReservation(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, abandonRoute[1]);
       return json({ ok: true, ...result });
     } catch (error) {
       return errorResponse(error);

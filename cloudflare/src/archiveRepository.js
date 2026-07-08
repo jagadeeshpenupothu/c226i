@@ -131,6 +131,12 @@ async function readUsage(db, uid) {
     .first();
 }
 
+async function ensureUsage(db, uid) {
+  const now = new Date().toISOString();
+  await ensureUser(db, uid, now);
+  return readUsage(db, uid);
+}
+
 async function findDocumentById(db, documentId) {
   return db.prepare(
     `SELECT document_id, owner_uid, sha256, storage_key, original_file_name, display_name,
@@ -141,6 +147,20 @@ async function findDocumentById(db, documentId) {
   )
     .bind(documentId)
     .first();
+}
+
+async function listDocuments(db, uid) {
+  const result = await db.prepare(
+    `SELECT document_id, owner_uid, sha256, storage_key, original_file_name, display_name,
+            content_type, byte_size, page_count, status, idempotency_key,
+            created_at, updated_at, last_opened_at
+     FROM documents
+     WHERE owner_uid = ?
+     ORDER BY updated_at DESC, created_at DESC`
+  )
+    .bind(uid)
+    .all();
+  return (result.results ?? []).map(mapDocument);
 }
 
 async function reserveQuota(db, uid, byteSize, now) {
@@ -310,6 +330,117 @@ export async function finalizeArchiveDocument(db, bucket, uid, documentId) {
     document: mapDocument(await findDocumentById(db, documentId)),
     quota: await readUsage(db, uid)
   };
+}
+
+export async function getAccountQuota(db, uid) {
+  return ensureUsage(db, uid);
+}
+
+export async function listArchiveDocuments(db, uid) {
+  return {
+    documents: await listDocuments(db, uid),
+    quota: await ensureUsage(db, uid)
+  };
+}
+
+export async function getArchiveDocumentStatus(db, uid, documentId) {
+  const document = await findDocumentById(db, documentId);
+  if (!document) notFound("reservation_not_found");
+  if (document.owner_uid !== uid) forbidden("reservation_forbidden");
+  const upload = await findMultipartUpload(db, documentId);
+  return {
+    document: mapDocument(document),
+    upload: upload ? { status: upload.status } : null,
+    quota: await ensureUsage(db, uid)
+  };
+}
+
+export async function getArchiveDownload(db, bucket, uid, documentId) {
+  const document = await findDocumentById(db, documentId);
+  if (!document) notFound("document_not_found");
+  if (document.owner_uid !== uid) forbidden("document_forbidden");
+  if (document.status !== "synced") conflict("document_not_ready");
+  const object = await bucket.get(document.storage_key);
+  if (!object) notFound("r2_object_missing");
+  return {
+    document: mapDocument(document),
+    object
+  };
+}
+
+async function subtractUsedBytes(db, uid, byteSize, now) {
+  const result = await db.prepare(
+    `UPDATE users
+     SET used_bytes = used_bytes - ?,
+         updated_at = ?
+     WHERE uid = ? AND used_bytes >= ?`
+  )
+    .bind(byteSize, now, uid, byteSize)
+    .run();
+  if (changes(result) !== 1) conflict("quota_accounting_failed");
+}
+
+async function subtractReservedBytes(db, uid, byteSize, now) {
+  const result = await db.prepare(
+    `UPDATE users
+     SET reserved_bytes = reserved_bytes - ?,
+         updated_at = ?
+     WHERE uid = ? AND reserved_bytes >= ?`
+  )
+    .bind(byteSize, now, uid, byteSize)
+    .run();
+  if (changes(result) !== 1) conflict("quota_accounting_failed");
+}
+
+async function removeDocumentRows(db, documentId) {
+  await db.prepare("DELETE FROM multipart_upload_parts WHERE document_id = ?").bind(documentId).run();
+  await db.prepare("DELETE FROM multipart_uploads WHERE document_id = ?").bind(documentId).run();
+  await db.prepare("DELETE FROM documents WHERE document_id = ?").bind(documentId).run();
+}
+
+export async function deleteArchiveDocument(db, bucket, uid, documentId) {
+  const document = await findDocumentById(db, documentId);
+  if (!document) {
+    return { deleted: true, repeated: true, quota: await ensureUsage(db, uid) };
+  }
+  if (document.owner_uid !== uid) forbidden("document_forbidden");
+
+  await bucket.delete(document.storage_key);
+  const now = new Date().toISOString();
+  if (document.status === "synced") {
+    await subtractUsedBytes(db, uid, document.byte_size, now);
+  } else if (["reserved", "uploading"].includes(document.status)) {
+    await subtractReservedBytes(db, uid, document.byte_size, now);
+  }
+  await removeDocumentRows(db, documentId);
+  return { deleted: true, repeated: false, quota: await ensureUsage(db, uid) };
+}
+
+export async function abandonArchiveReservation(db, bucket, uid, documentId) {
+  const document = await findDocumentById(db, documentId);
+  if (!document) {
+    return { abandoned: true, repeated: true, quota: await ensureUsage(db, uid) };
+  }
+  if (document.owner_uid !== uid) forbidden("reservation_forbidden");
+  if (document.status === "synced") conflict("document_already_finalized");
+  if (!["reserved", "uploading"].includes(document.status)) conflict("reservation_not_active");
+
+  const upload = await db.prepare(
+    `SELECT upload_id, storage_key, status
+     FROM multipart_uploads
+     WHERE document_id = ?`
+  )
+    .bind(documentId)
+    .first();
+  if (upload?.status === "active") {
+    await bucket.resumeMultipartUpload(upload.storage_key, upload.upload_id).abort();
+  }
+
+  await bucket.delete(document.storage_key);
+  const now = new Date().toISOString();
+  await subtractReservedBytes(db, uid, document.byte_size, now);
+  await removeDocumentRows(db, documentId);
+  return { abandoned: true, repeated: false, quota: await ensureUsage(db, uid) };
 }
 
 export { ArchiveError };

@@ -135,6 +135,16 @@ async function readAuthenticatedJson(path, token, init = {}) {
   });
 }
 
+async function authenticatedFetch(path, token, init = {}) {
+  return fetch(`${BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      authorization: `Bearer ${token}`
+    }
+  });
+}
+
 async function runMultipartArchiveSmoke(token) {
   const runId = crypto.randomUUID();
   const prefix = new TextEncoder().encode(`%PDF-1.7\n% PrintPilot local multipart smoke ${runId}\n`);
@@ -179,6 +189,32 @@ async function runMultipartArchiveSmoke(token) {
   });
   assert.equal(completed.upload.status, "completed");
 
+  const finalized = await readAuthenticatedJson(`/v1/archive/${documentId}/finalize`, token, {
+    method: "POST"
+  });
+  assert.equal(finalized.document.status, "synced");
+  assert.equal(finalized.quota.reserved_bytes, 0);
+  assert.equal(finalized.quota.used_bytes, pdfBytes.byteLength);
+
+  const repeatedFinalize = await readAuthenticatedJson(`/v1/archive/${documentId}/finalize`, token, {
+    method: "POST"
+  });
+  assert.equal(repeatedFinalize.repeated, true);
+  assert.equal(repeatedFinalize.quota.used_bytes, pdfBytes.byteLength);
+
+  const quota = await readAuthenticatedJson("/v1/account/quota", token);
+  assert.equal(quota.quota.used_bytes, pdfBytes.byteLength);
+  assert.equal(quota.quota.reserved_bytes, 0);
+
+  const list = await readAuthenticatedJson("/v1/documents", token);
+  assert.ok(list.documents.some((document) => document.documentId === documentId));
+
+  const download = await authenticatedFetch(`/v1/archive/${documentId}/download`, token);
+  assert.equal(download.ok, true, `download failed: ${await download.text()}`);
+  const downloadedBytes = Buffer.from(await download.arrayBuffer());
+  assert.equal(downloadedBytes.byteLength, pdfBytes.byteLength);
+  assert.equal(Buffer.compare(downloadedBytes, Buffer.from(pdfBytes)), 0);
+
   const outputFile = join(tmpdir(), `printpilot-r2-${runId}.pdf`);
   try {
     await run("npx", [
@@ -197,6 +233,17 @@ async function runMultipartArchiveSmoke(token) {
   } finally {
     if (existsSync(outputFile)) unlinkSync(outputFile);
   }
+
+  const deleted = await readAuthenticatedJson(`/v1/archive/${documentId}`, token, {
+    method: "DELETE"
+  });
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.quota.used_bytes, 0);
+
+  const repeatedDelete = await readAuthenticatedJson(`/v1/archive/${documentId}`, token, {
+    method: "DELETE"
+  });
+  assert.equal(repeatedDelete.repeated, true);
 }
 
 writeLocalAuthVars();

@@ -152,6 +152,28 @@ class FakeD1Statement {
       return { success: true, meta: { changes: 1 } };
     }
 
+    if (normalized.startsWith("UPDATE users SET used_bytes = used_bytes -")) {
+      const [usedBytes, updatedAt, uid, minimumUsedBytes] = this.values;
+      const user = this.db.users.get(uid);
+      if (!user || user.used_bytes < minimumUsedBytes) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      user.used_bytes -= usedBytes;
+      user.updated_at = updatedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith("UPDATE users SET reserved_bytes = reserved_bytes -")) {
+      const [reservedBytes, updatedAt, uid, minimumReservedBytes] = this.values;
+      const user = this.db.users.get(uid);
+      if (!user || user.reserved_bytes < minimumReservedBytes) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      user.reserved_bytes -= reservedBytes;
+      user.updated_at = updatedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+
     if (normalized.startsWith("UPDATE users SET reserved_bytes = MAX")) {
       const [byteSize, updatedAt, uid] = this.values;
       const user = this.db.users.get(uid);
@@ -246,12 +268,28 @@ class FakeD1Statement {
       return { success: true };
     }
 
+    if (normalized.startsWith("DELETE FROM multipart_uploads")) {
+      const [documentId] = this.values;
+      const deleted = this.db.multipartUploads.delete(documentId);
+      return { success: true, meta: { changes: deleted ? 1 : 0 } };
+    }
+
+    if (normalized.startsWith("DELETE FROM documents")) {
+      const [documentId] = this.values;
+      const deleted = this.db.documents.delete(documentId);
+      return { success: true, meta: { changes: deleted ? 1 : 0 } };
+    }
+
     throw new Error(`Unhandled fake D1 run: ${normalized}`);
   }
 
   async first() {
     const normalized = this.sql.replace(/\s+/g, " ").trim();
     if (normalized.startsWith("SELECT document_id") && normalized.includes("FROM multipart_uploads")) {
+      return this.db.multipartUploads.get(this.values[0]) ?? null;
+    }
+
+    if (normalized.startsWith("SELECT upload_id")) {
       return this.db.multipartUploads.get(this.values[0]) ?? null;
     }
 
@@ -295,6 +333,19 @@ class FakeD1Statement {
     }
 
     throw new Error(`Unhandled fake D1 first: ${normalized}`);
+  }
+
+  async all() {
+    const normalized = this.sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT document_id") && normalized.includes("FROM documents") && normalized.includes("WHERE owner_uid = ?")) {
+      const [uid] = this.values;
+      return {
+        results: [...this.db.documents.values()]
+          .filter((document) => document.owner_uid === uid)
+          .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+      };
+    }
+    throw new Error(`Unhandled fake D1 all: ${normalized}`);
   }
 }
 
@@ -352,6 +403,16 @@ async function authRequest(path, init = {}, env = makeEnv(), payloadOverrides = 
   }, env);
 }
 
+async function rawAuthRequest(path, init = {}, env = makeEnv(), payloadOverrides = {}) {
+  return worker.fetch(new Request(`http://local.test${path}`, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      ...(await authHeaders(payloadOverrides))
+    }
+  }), env);
+}
+
 async function completeSmallUpload(env = makeEnv(), payloadOverrides = {}) {
   const input = {
     ...validReserveInput,
@@ -374,6 +435,13 @@ async function completeSmallUpload(env = makeEnv(), payloadOverrides = {}) {
   return document;
 }
 
+async function finalizedSmallDocument(env = makeEnv(), payloadOverrides = {}) {
+  const document = await completeSmallUpload(env, payloadOverrides);
+  const finalized = await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env, payloadOverrides);
+  assert.equal(finalized.response.status, 200);
+  return finalized.body.document;
+}
+
 class FakeR2Bucket {
   constructor() {
     this.objects = new Map();
@@ -388,9 +456,25 @@ class FakeR2Bucket {
   async get(key) {
     const value = this.objects.get(key);
     if (value === undefined) return null;
-    if (typeof value === "string") return { size: value.length, text: async () => value };
-    if (value?.bytes) return { size: value.bytes.byteLength, arrayBuffer: async () => value.bytes.buffer };
-    return { size: value?.size ?? 0, text: async () => String(value) };
+    if (typeof value === "string") {
+      return {
+        size: value.length,
+        body: new Blob([value]).stream(),
+        text: async () => value
+      };
+    }
+    if (value?.bytes) {
+      return {
+        size: value.bytes.byteLength,
+        body: new Blob([value.bytes]).stream(),
+        arrayBuffer: async () => value.bytes.buffer
+      };
+    }
+    return {
+      size: value?.size ?? 0,
+      body: new Blob([new Uint8Array(value?.size ?? 0)]).stream(),
+      text: async () => String(value)
+    };
   }
 
   async delete(key) {
@@ -420,8 +504,8 @@ class FakeR2Bucket {
         if (state.status !== "active") throw new Error("multipart upload is not active");
         assert.ok(body, "multipart upload received a streaming body");
         const etag = `etag-${uploadId}-${partNumber}`;
-        const byteSize = await countStreamBytes(body);
-        state.parts.set(partNumber, { partNumber, etag, byteSize });
+        const bytes = await readStreamBytes(body);
+        state.parts.set(partNumber, { partNumber, etag, byteSize: bytes.byteLength, bytes });
         return { etag };
       },
       complete: async (parts) => {
@@ -431,8 +515,10 @@ class FakeR2Bucket {
           if (!uploaded || uploaded.etag !== part.etag) throw new Error("missing part");
         }
         state.status = "completed";
-        const size = [...state.parts.values()].reduce((sum, part) => sum + (part.byteSize ?? 0), 0);
-        this.objects.set(key, { multipart: true, parts, size });
+        const uploadedParts = parts.map((part) => state.parts.get(part.partNumber));
+        const size = uploadedParts.reduce((sum, part) => sum + (part.byteSize ?? 0), 0);
+        const bytes = Buffer.concat(uploadedParts.map((part) => Buffer.from(part.bytes)));
+        this.objects.set(key, { multipart: true, parts, size, bytes });
         return { key };
       },
       abort: async () => {
@@ -443,16 +529,16 @@ class FakeR2Bucket {
   }
 }
 
-async function countStreamBytes(body) {
+async function readStreamBytes(body) {
   const reader = body.getReader();
-  let total = 0;
+  const chunks = [];
   while (true) {
     const { value, done } = await reader.read();
-    if (done) return total;
+    if (done) return Buffer.concat(chunks);
     if (typeof value === "string") {
-      total += Buffer.byteLength(value);
+      chunks.push(Buffer.from(value));
     } else {
-      total += value.byteLength;
+      chunks.push(Buffer.from(value));
     }
   }
 }
@@ -1014,5 +1100,168 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     assert.equal(response.status, 409);
     assert.equal(body.ok, false);
     assert.equal(body.error, "reservation_not_ready");
+  });
+
+  test("document list returns only the authenticated user's documents", async () => {
+    const env = makeEnv();
+    const ownDocument = await finalizedSmallDocument(env);
+    await finalizedSmallDocument(env, { sub: "other-user" });
+
+    const { response, body } = await authRequest("/v1/documents", { method: "GET" }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.documents.length, 1);
+    assert.equal(body.documents[0].documentId, ownDocument.documentId);
+    assert.equal(body.documents[0].ownerUid, "user-123");
+  });
+
+  test("quota endpoint returns authenticated user storage usage", async () => {
+    const env = makeEnv();
+    await finalizedSmallDocument(env);
+
+    const { response, body } = await authRequest("/v1/account/quota", { method: "GET" }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.quota.owner_uid, "user-123");
+    assert.equal(body.quota.used_bytes, 8);
+    assert.equal(body.quota.reserved_bytes, 0);
+    assert.equal(body.quota.quota_bytes, 5_368_709_120);
+  });
+
+  test("download streams finalized PDF for the owner", async () => {
+    const env = makeEnv();
+    const document = await finalizedSmallDocument(env);
+
+    const response = await rawAuthRequest(`/v1/archive/${document.documentId}/download`, { method: "GET" }, env);
+    const bytes = Buffer.from(await response.arrayBuffer());
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/pdf");
+    assert.equal(bytes.byteLength, 8);
+    assert.equal(bytes.toString(), "part-one");
+  });
+
+  test("download rejects missing auth, cross-user access, and missing R2 object", async () => {
+    const env = makeEnv();
+    const document = await finalizedSmallDocument(env);
+
+    const unauthenticated = await worker.fetch(new Request(`http://local.test/v1/archive/${document.documentId}/download`), env);
+    assert.equal(unauthenticated.status, 401);
+
+    const crossUser = await rawAuthRequest(`/v1/archive/${document.documentId}/download`, { method: "GET" }, env, { sub: "other-user" });
+    assert.equal(crossUser.status, 403);
+
+    env.PRINTPILOT_ARCHIVE.objects.delete(document.storageKey);
+    const missing = await rawAuthRequest(`/v1/archive/${document.documentId}/download`, { method: "GET" }, env);
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).error, "r2_object_missing");
+  });
+
+  test("delete removes finalized document and releases used quota once", async () => {
+    const env = makeEnv();
+    const document = await finalizedSmallDocument(env);
+
+    const first = await authRequest(`/v1/archive/${document.documentId}`, { method: "DELETE" }, env);
+    const second = await authRequest(`/v1/archive/${document.documentId}`, { method: "DELETE" }, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(first.body.deleted, true);
+    assert.equal(first.body.repeated, false);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.repeated, true);
+    assert.equal(env.PRINTPILOT_DB.users.get("user-123").used_bytes, 0);
+    assert.equal(env.PRINTPILOT_DB.users.get("user-123").reserved_bytes, 0);
+    assert.equal(env.PRINTPILOT_DB.documents.has(document.documentId), false);
+    assert.equal(env.PRINTPILOT_ARCHIVE.objects.has(document.storageKey), false);
+  });
+
+  test("same PDF can be reserved again after delete", async () => {
+    const env = makeEnv();
+    const input = { ...validReserveInput, byteSize: 8, idempotencyKey: "delete-reupload" };
+    const first = await reserveDocument(env, input);
+    await authRequest(`/v1/archive/${first.documentId}`, { method: "DELETE" }, env);
+
+    const second = await reserve({
+      ...input,
+      idempotencyKey: "delete-reupload-again"
+    }, env);
+
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.duplicate, false);
+    assert.notEqual(second.body.document.documentId, first.documentId);
+  });
+
+  test("status endpoint reports reservation, upload, completed, and finalized states", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env, { ...validReserveInput, byteSize: 8, idempotencyKey: "status-flow" });
+
+    const reserved = await authRequest(`/v1/archive/${document.documentId}/status`, { method: "GET" }, env);
+    assert.equal(reserved.body.document.status, "reserved");
+    assert.equal(reserved.body.upload, null);
+
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const uploading = await authRequest(`/v1/archive/${document.documentId}/status`, { method: "GET" }, env);
+    assert.equal(uploading.body.document.status, "uploading");
+    assert.equal(uploading.body.upload.status, "active");
+
+    const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      headers: { "content-length": "8" },
+      body: "part-one"
+    }, env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: part.body.etag }] })
+    }, env);
+    const completed = await authRequest(`/v1/archive/${document.documentId}/status`, { method: "GET" }, env);
+    assert.equal(completed.body.upload.status, "completed");
+
+    await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env);
+    const finalized = await authRequest(`/v1/archive/${document.documentId}/status`, { method: "GET" }, env);
+    assert.equal(finalized.body.document.status, "synced");
+  });
+
+  test("abandon releases an unfinished reservation and active multipart upload", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env, { ...validReserveInput, byteSize: 8, idempotencyKey: "abandon-active" });
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+
+    const first = await authRequest(`/v1/archive/${document.documentId}/abandon`, { method: "POST" }, env);
+    const second = await authRequest(`/v1/archive/${document.documentId}/abandon`, { method: "POST" }, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(first.body.abandoned, true);
+    assert.equal(first.body.repeated, false);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.repeated, true);
+    assert.equal(env.PRINTPILOT_DB.users.get("user-123").reserved_bytes, 0);
+    assert.equal(env.PRINTPILOT_DB.documents.has(document.documentId), false);
+  });
+
+  test("cloud archive local end-to-end flow succeeds", async () => {
+    const env = makeEnv();
+    const reserveResult = await reserve({ ...validReserveInput, byteSize: 8, idempotencyKey: "full-e2e" }, env);
+    const document = reserveResult.body.document;
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      headers: { "content-length": "8" },
+      body: "part-one"
+    }, env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: part.body.etag }] })
+    }, env);
+    await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env);
+    const list = await authRequest("/v1/documents", { method: "GET" }, env);
+    const download = await rawAuthRequest(`/v1/archive/${document.documentId}/download`, { method: "GET" }, env);
+    const deletion = await authRequest(`/v1/archive/${document.documentId}`, { method: "DELETE" }, env);
+
+    assert.equal(list.body.documents.length, 1);
+    assert.equal(Buffer.from(await download.arrayBuffer()).toString(), "part-one");
+    assert.equal(deletion.response.status, 200);
+    assert.equal(deletion.body.quota.used_bytes, 0);
   });
 });

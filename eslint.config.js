@@ -25,5 +25,16 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }]
     }
+  },
+  {
+    files: ["tests/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: {
+        Buffer: "readonly",
+        fetch: "readonly",
+        process: "readonly"
+      }
+    }
   }
 );

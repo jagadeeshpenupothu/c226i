@@ -2,11 +2,12 @@
   "name": "printpilot-cloud-functions",
   "private": true,
   "type": "module",
+  "main": "lib/index.js",
   "engines": {
     "node": "20"
   },
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc",
     "test": "node --test"
   },
   "dependencies": {

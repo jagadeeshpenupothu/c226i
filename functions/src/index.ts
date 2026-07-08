@@ -160,7 +160,7 @@ export const deletePdfArchive = onCall<{ ownerUid: string; documentId: string }>
   const now = FieldValue.serverTimestamp();
 
   const snap = await documentRef.get();
-  if (!snap.exists) throw new HttpsError("not-found", "Cloud document not found.");
+  if (!snap.exists) return { ok: true };
   const data = snap.data() || {};
   const byteSize = Number(data.byteSize || 0);
   const storagePath = String(data.storagePath || "");

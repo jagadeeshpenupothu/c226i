@@ -11,7 +11,9 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:mac": "tauri build --target universal-apple-darwin",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test:firebase:emulator:runner": "node --test tests/firebase-emulator/*.test.mjs",
+    "test:firebase:emulator": "npm --prefix functions run build && FIREBASE_CLI_DISABLE_UPDATE_CHECK=true XDG_CONFIG_HOME=/private/tmp/printpilot-firebase-config FIREBASE_FUNCTIONS_EMULATOR_HOST=127.0.0.1:5001 firebase emulators:exec --project printpilot-emulator-test --only auth,firestore,storage,functions \"npm run test:firebase:emulator:runner\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -28,6 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.16.0",
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -38,6 +41,7 @@
     "eslint": "^9.16.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
+    "firebase-tools": "^15.22.4",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.16",
     "typescript": "^5.7.2",

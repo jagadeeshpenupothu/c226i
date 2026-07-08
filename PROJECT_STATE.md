@@ -904,3 +904,76 @@ Remaining blockers and limits:
 Recommended next action:
 
 - Add Firebase emulator tests for auth boundaries, cross-user denial, quota exhaustion, duplicate handling, oversize rejection, stale reservation cleanup, and cloud delete accounting before any production Firebase deployment.
+
+## 28. Firebase Emulator Cloud Verification Update
+
+Update date: 2026-07-08
+
+Primary goal completed:
+
+- Added a Firebase Emulator integration suite for the authenticated cloud PDF archive.
+- Test project ID: `printpilot-emulator-test`.
+- Emulated services: Authentication, Firestore, Storage, Functions.
+- Deterministic ports: Auth `9099`, Firestore `8080`, Functions `5001`, Storage `9199`, Hub `4400`.
+- Test command: `npm run test:firebase:emulator`.
+- The test runner uses `firebase emulators:exec` and fails if required emulator environment variables are absent.
+- No Firebase credentials, service-account keys, billing, production deployment, release tag, or GitHub Release were used.
+
+Integration test architecture:
+
+- Tests live under `tests/firebase-emulator/`.
+- Helpers create Auth emulator accounts, authenticated clients, unauthenticated contexts, trusted seed data, deterministic small PDF fixtures, SHA-256 values, archive reservations, Storage uploads, finalization calls, quota reads, deletion calls, duplicate requests, and concurrent reservations.
+- Firestore and Storage rules are exercised through `@firebase/rules-unit-testing`.
+- Cloud Functions are exercised through the Firebase client SDK against the Functions emulator.
+- Emulator state is cleared between tests for Auth, Firestore, and Storage.
+
+Security and archive test results:
+
+- Authentication emulator: pass.
+- Firestore rules: pass for unauthenticated denial, cross-user denial, own metadata reads, direct metadata write denial, ownerUid-change denial, quota-forgery denial, direct finalized/synced transition denial, and hash-index write denial.
+- Storage rules: pass for unauthenticated upload/download denial, cross-user read/write denial, invalid content type denial, unexpected path denial, and valid own archive-path PDF upload.
+- Archive happy path: pass for reserve -> quota reserved -> upload -> finalize -> synced metadata -> exact accounting -> user isolation.
+- Per-user deduplication: pass; same user reuses the same document and quota, different user gets a separate private document/storage path.
+- Concurrent duplicate reserve race: pass; concurrent same-user same-SHA reservations produce one logical reservation and one quota charge.
+- 500 MB trusted boundary: pass through reservation policy for exactly `524,288,000` bytes accepted and one byte over rejected.
+- Storage 500 MB payload boundary: skipped because the Storage emulator evaluates `request.resource.size` from an actual upload payload; the suite intentionally avoids allocating or uploading a 500+ MB object.
+- 5 GB quota: pass for remaining-quota acceptance, quota-exceeded rejection, failed reservation no-charge, duplicate no-charge, and concurrent reservations not exceeding seeded quota.
+- Finalization idempotency: pass; repeated finalize does not double-charge.
+- Delete/accounting: pass after fix; metadata, storage object, hash index, and quota are reconciled, and repeated delete remains idempotent.
+- Partial failure/recovery: pass for reservation-without-upload, finalize-without-upload, upload-with-wrong-finalize-input, finalized-retry, missing-storage delete, malformed callable input, unauthenticated callable invocation, and cross-user callable denial.
+
+Defect discovered and fixed:
+
+- Defect: `deletePdfArchive` returned `functions/not-found` when called after the cloud document metadata was already deleted.
+- Impact: repeated delete was not idempotent and could make safe retry/recovery paths appear failed.
+- Fix: `deletePdfArchive` now returns `{ ok: true }` when the document is already absent, preserving quota/accounting state.
+
+Latest verification for this update:
+
+- `npm run test:firebase:emulator`: pass, 14 passed, 0 failed, 1 skipped.
+- `npx tsc --noEmit`: pass.
+- `npm run lint`: pass.
+- `npx vite build --outDir /private/tmp/printpilot-firebase-emulator-dist --emptyOutDir`: pass with known PDF.js eval and large chunk warnings.
+- `cd src-tauri && cargo test`: pass, 12 passed and 1 ignored.
+- `cd src-tauri && cargo check`: pass with known transitive `block v0.1.6` future-incompat warning.
+- `npm --prefix functions run build`: pass.
+- `npm audit --prefix functions --audit-level=high`: pass high-severity gate; moderate transitive Firebase Admin `uuid` advisories remain.
+- Printer diagnostics regression: pass through `cargo test` diagnostics unit tests; real-printer ignored diagnostic capture was not run.
+- DMG pipeline integrity: `.github` release workflow files unchanged.
+- `native-macos/` integrity: remains untracked and untouched.
+
+Remaining blockers and limits:
+
+- Live Firebase deployment remains blocked pending explicit approval, production project setup, billing/budget alerts, and App Check/security review.
+- No live Firebase cloud E2E test was performed.
+- No UI E2E test verified that an already-open PDF remains visible after cloud deletion.
+- Storage-rule oversize payload was not tested with a real 500+ MB upload; trusted reservation size limits cover the boundary without large allocation.
+- Firebase CLI emits unauthenticated emulator warnings and Java/runtime deprecation warnings during local emulator startup; tests still run against local emulators only.
+
+Current phase:
+
+- Cloud archive verification and production hardening.
+
+Exact next step:
+
+- Run a controlled live Firebase staging smoke test with billing budgets and App Check configured, after explicit approval.

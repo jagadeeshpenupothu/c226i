@@ -1,0 +1,15 @@
+{
+  "name": "printpilot-cloudflare-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "HOME=.wrangler-home wrangler dev --local --ip 127.0.0.1 --port 8787",
+    "db:migrate:local": "HOME=.wrangler-home wrangler d1 migrations apply printpilot-local --local",
+    "test": "node --test test/*.test.mjs",
+    "test:local": "node test/local-smoke.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,16 @@
+name = "printpilot-cloudflare-local"
+main = "src/index.js"
+compatibility_date = "2026-07-08"
+workers_dev = false
+
+[[d1_databases]]
+binding = "PRINTPILOT_DB"
+database_name = "printpilot-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "PRINTPILOT_ARCHIVE"
+bucket_name = "printpilot-local-archive"
+preview_bucket_name = "printpilot-local-archive-preview"
+

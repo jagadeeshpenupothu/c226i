@@ -1,3 +1,5 @@
+import { verifyFirebaseIdToken } from "./auth.js";
+
 const SERVICE_NAME = "printpilot-cloudflare-local";
 const DEV_UID = "local-single-user";
 const USER_QUOTA_BYTES = 5_368_709_120;
@@ -14,6 +16,10 @@ function json(data, status = 200) {
 
 function notFound() {
   return json({ ok: false, error: "not_found" }, 404);
+}
+
+function unauthorized() {
+  return json({ ok: false, error: "unauthorized" }, 401);
 }
 
 async function handleD1Probe(env) {
@@ -121,8 +127,16 @@ async function fetch(request, env) {
     return handleR2Probe(env);
   }
 
+  if (request.method === "GET" && url.pathname === "/probe/auth") {
+    try {
+      const auth = await verifyFirebaseIdToken(request, env);
+      return json({ ok: true, uid: auth.uid });
+    } catch {
+      return unauthorized();
+    }
+  }
+
   return notFound();
 }
 
 export default { fetch };
-

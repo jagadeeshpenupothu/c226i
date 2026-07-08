@@ -3,6 +3,9 @@ main = "src/index.js"
 compatibility_date = "2026-07-08"
 workers_dev = false
 
+[vars]
+FIREBASE_PROJECT_ID = "printpilot-local"
+
 [[d1_databases]]
 binding = "PRINTPILOT_DB"
 database_name = "printpilot-local"
@@ -13,4 +16,3 @@ migrations_dir = "migrations"
 binding = "PRINTPILOT_ARCHIVE"
 bucket_name = "printpilot-local-archive"
 preview_bucket_name = "printpilot-local-archive-preview"
-

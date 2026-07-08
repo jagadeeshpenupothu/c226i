@@ -3,6 +3,64 @@
 Audit date: 2026-07-07
 Workspace: `/Users/jagadeeshpenupothu487/Desktop/c226i`
 
+## 0. Current Priority Update - macOS DMG Distribution
+
+Update date: 2026-07-08
+
+Immediate priority changed to building, verifying, and publishing downloadable macOS DMG installers for the current Tauri + React + TypeScript + Rust application. Printer diagnostics and other feature development are paused until the DMG release path is approved.
+
+Current development track:
+- Tauri app remains the active release track temporarily.
+- Swift/native migration remains deferred, not cancelled.
+- `native-macos/` is preserved unchanged and remains untracked.
+- No application features, UI redesign, print submission, or printer configuration changes were made for this release task.
+
+Local verification on Intel MacBook Pro:
+- Host architecture: `x86_64`.
+- Host OS: macOS `12.7.6`.
+- `npm run lint`: PASS.
+- `npx tsc --noEmit`: PASS.
+- Vite production build to `/private/tmp/printpilot-vite-release-dist`: PASS, with existing PDF.js `eval` and large chunk warnings.
+- `cargo test` in `src-tauri`: PASS, 12 passed, 1 ignored.
+- `cargo check` in `src-tauri`: PASS, with existing future-incompat warning for transitive `block v0.1.6`.
+- Intel Tauri app bundle: PASS at `src-tauri/target/x86_64-apple-darwin/release/bundle/macos/PrintPilot.app`.
+- Intel DMG: PASS after running Tauri's generated DMG script outside the sandbox; sandboxed `hdiutil` failed with `Device not configured`.
+- Intel DMG path: `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/PrintPilot_0.1.0_x64.dmg`.
+- Intel executable architecture: `x86_64`.
+- Binary deployment target: `LC_VERSION_MIN_MACOSX` version `10.13`.
+- Bundle `LSMinimumSystemVersion`: `10.13`.
+- Code signing: unsigned; `codesign` reports the app is not signed.
+- DMG mount verification: PASS; read-only mount contained `PrintPilot.app`.
+- Launch smoke test: PASS; process started and remained running until stopped.
+
+Artifact status:
+- Intel `x86_64-apple-darwin`: locally built and verified.
+- Apple Silicon `aarch64-apple-darwin`: configured in GitHub Actions for native arm64 macOS runner; not locally verified.
+- Universal macOS DMG: not verified; do not publish a universal artifact until an actual universal build is produced and inspected.
+
+GitHub Actions status:
+- `.github/workflows/release.yml` updated to focus on macOS DMGs.
+- Release workflow runs on `v*` tags and manual dispatch.
+- Workflow uses `npm ci`, lint, TypeScript check, external Vite build, `cargo test --locked`, `cargo check --locked`, native Tauri DMG build, architecture verification, DMG mount/content verification, checksum generation, workflow artifact upload, and draft GitHub Release attachment for tag builds.
+- GitHub workflow itself has not been remotely executed in this session.
+- No tag was created and nothing was pushed.
+
+macOS compatibility status:
+- Configured minimum macOS: `10.13`.
+- Binary encoded minimum macOS: `10.13`.
+- Verified runtime minimum macOS: `12.7.6` on Intel.
+- Frontend build target for macOS: Safari 13, so runtime support below macOS 12.7.6 remains unproven without older-device testing.
+
+Signing and release blockers:
+- Signing/notarization are not configured.
+- Unsigned/unnotarized Gatekeeper warnings are expected.
+- Apple Silicon artifact requires a successful GitHub Actions arm64 run or a native Mac mini M4 build.
+- Universal artifact remains unverified.
+- Bundle identifier `com.printpilot.app` triggers a Tauri warning because it ends in `.app`; this was documented but not changed during this release task.
+
+Exact next step:
+- Push the committed workflow/docs changes and manually run the GitHub Actions `Release` workflow to verify both macOS DMG artifacts before creating a release tag.
+
 ## 1. Executive Summary
 
 PrintPilot is a Tauri v2 desktop printing application built with React/TypeScript in the webview and Rust in the backend. The real current state is an advanced v1 prototype: PDF loading/preview, printer discovery, driver capability parsing, CUPS print submission, Windows WMI/PrintTo support, profiles, local job history, printer dashboard, notification UI, and cloud authentication scaffolding are present. The core safe-printing model is sound: it uses installed OS print systems and does not talk directly to printer hardware.

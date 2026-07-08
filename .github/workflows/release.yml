@@ -1,45 +1,32 @@
 name: Release
 
-# Builds native installers for every supported platform on its own runner and
-# attaches them to a draft GitHub Release:
-#   - macOS   -> .dmg  (Apple Silicon + Intel)
-#   - Windows -> .msi (WiX) and .exe (NSIS)
-#   - Linux   -> .deb and .AppImage
-#
-# macOS .dmg and Windows .msi/.exe CANNOT be cross-built from Linux, so they are
-# produced here on macos-latest / windows-latest runners.
-#
-# Trigger by pushing a version tag (e.g. `git tag v0.1.0 && git push --tags`)
-# or manually from the Actions tab (workflow_dispatch).
-
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build-installers:
+  macos-dmg:
+    name: macOS DMG (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Apple Silicon (M-series) DMG
-          - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-          # Intel macOS DMG
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-          # Linux .deb + .AppImage
-          - platform: 'ubuntu-22.04'
-            args: ''
-          # Windows .msi + .exe
-          - platform: 'windows-latest'
-            args: ''
-
-    runs-on: ${{ matrix.platform }}
+          - arch: x86_64
+            lipo_arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - arch: aarch64
+            lipo_arch: arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
 
     steps:
       - name: Checkout
@@ -49,49 +36,108 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Install Rust (stable)
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Build app + bundle installers (tauri-action)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lint
+        run: npm run lint
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Frontend production build
+        run: npx vite build --outDir /tmp/printpilot-vite-release-dist --emptyOutDir
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Rust check
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: Build Tauri macOS DMG
+        run: npm run tauri -- build --target ${{ matrix.target }}
+
+      - name: Verify and rename DMG
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(node -p "require('./package.json').version")"
+          target_dir="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app_path="${target_dir}/macos/PrintPilot.app"
+          dmg_path="$(find "${target_dir}/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
+          artifact_dir="release-artifacts"
+          artifact_name="PrintPilot-${version}-macos-${{ matrix.arch }}.dmg"
+          artifact_path="${artifact_dir}/${artifact_name}"
+
+          test -d "${app_path}"
+          test -f "${dmg_path}"
+          mkdir -p "${artifact_dir}"
+
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app_path}/Contents/Info.plist")"
+          binary_path="${app_path}/Contents/MacOS/${executable}"
+          test -x "${binary_path}"
+
+          file "${binary_path}" | tee "${artifact_dir}/PrintPilot-${version}-macos-${{ matrix.arch }}.file.txt"
+          lipo -info "${binary_path}" | tee "${artifact_dir}/PrintPilot-${version}-macos-${{ matrix.arch }}.lipo.txt"
+          lipo -info "${binary_path}" | grep -q "${{ matrix.lipo_arch }}"
+          otool -l "${binary_path}" | grep -A 4 'LC_VERSION_MIN_MACOSX\|LC_BUILD_VERSION' | tee "${artifact_dir}/PrintPilot-${version}-macos-${{ matrix.arch }}.otool.txt"
+          codesign -dv --verbose=4 "${app_path}" 2>&1 | tee "${artifact_dir}/PrintPilot-${version}-macos-${{ matrix.arch }}.codesign.txt" || true
+
+          cp "${dmg_path}" "${artifact_path}"
+          mount_output="$(hdiutil attach -readonly -nobrowse "${artifact_path}")"
+          echo "${mount_output}"
+          mount_point="$(echo "${mount_output}" | awk '/\/Volumes\// {print $3; exit}')"
+          test -n "${mount_point}"
+          test -d "${mount_point}/PrintPilot.app"
+          hdiutil detach "${mount_point}"
+
+          shasum -a 256 "${artifact_path}" | tee "${artifact_path}.sha256"
+
+          echo "artifact_path=${artifact_path}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=${artifact_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PrintPilot ${{ github.ref_name }}'
-          releaseBody: |
-            PrintPilot ${{ github.ref_name }} installers.
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            release-artifacts/PrintPilot-*-macos-${{ matrix.arch }}.dmg
+            release-artifacts/PrintPilot-*-macos-${{ matrix.arch }}.dmg.sha256
+            release-artifacts/PrintPilot-*-macos-${{ matrix.arch }}.*.txt
+          if-no-files-found: error
 
-            - macOS: `.dmg` (aarch64 = Apple Silicon, x64 = Intel)
-            - Windows: `.msi` (WiX) or `.exe` (NSIS)
-            - Linux: `.deb` (Debian/Ubuntu) or `.AppImage` (portable)
-          releaseDraft: true
+      - name: Attach to draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          name: PrintPilot ${{ github.ref_name }}
+          body: |
+            Unsigned PrintPilot macOS test release.
+
+            Artifacts:
+            - PrintPilot-<version>-macos-x86_64.dmg for Intel Macs
+            - PrintPilot-<version>-macos-aarch64.dmg for Apple Silicon Macs
+
+            The apps are not notarized. macOS Gatekeeper will warn on first launch.
+          files: |
+            release-artifacts/PrintPilot-*-macos-${{ matrix.arch }}.dmg
+            release-artifacts/PrintPilot-*-macos-${{ matrix.arch }}.dmg.sha256
+          fail_on_unmatched_files: true

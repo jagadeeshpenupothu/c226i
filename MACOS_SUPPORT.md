@@ -1,65 +1,108 @@
 # macOS Support
 
-PrintPilot targets the widest macOS range that Tauri v2 allows. This document lists exactly which macOS versions and Mac hardware are supported.
+PrintPilot is currently distributed as unsigned macOS DMGs built from the Tauri application. Support claims are split into configured support and verified support.
 
 ## Summary
 
-- **Minimum:** macOS 10.13 (High Sierra) — set via `bundle.macOS.minimumSystemVersion` in [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json).
-- **Architectures:** Intel (`x86_64`) and Apple Silicon (`arm64`) via a universal binary.
-- **Latest tested target:** macOS 26 (Tahoe), the current release.
-- **Forward compatible:** runs on future Apple Silicon releases (e.g. macOS 27).
+- Product version: `0.1.0`.
+- Configured minimum macOS: `10.13`, from `src-tauri/tauri.conf.json`.
+- Built binary deployment target: `10.13`, verified on the local Intel build with `otool -l`.
+- Verified local runtime: macOS `12.7.6` on Intel `x86_64`.
+- Intel target: `x86_64-apple-darwin`.
+- Apple Silicon target: `aarch64-apple-darwin`.
+- Universal target: script exists as `npm run tauri:build:mac`, but universal output is not verified.
+- Signing/notarization: not configured.
 
-10.13 is the lowest version Tauri v2 supports, so this reaches essentially every Mac laptop still in real-world use. Printing uses the native CUPS backend (`lp`/`lpstat`/`lpoptions`), not the browser `window.print` API, so the 10.13 floor is safe.
+## Configured Versus Verified Minimum
 
-## Supported macOS versions
+`bundle.macOS.minimumSystemVersion` is set to `10.13`. Tauri v2 also documents `10.13` as the default macOS bundle minimum. The local Intel artifact includes `LSMinimumSystemVersion = 10.13` and an `LC_VERSION_MIN_MACOSX` load command of `10.13`.
 
-| # | Version | Name | Year | Runs on |
-|---|---------|------|------|---------|
-| 1 | 10.13 | High Sierra | 2017 | Intel |
-| 2 | 10.14 | Mojave | 2018 | Intel |
-| 3 | 10.15 | Catalina | 2019 | Intel |
-| 4 | 11 | Big Sur | 2020 | Intel + Apple Silicon¹ |
-| 5 | 12 | Monterey | 2021 | Intel + Apple Silicon |
-| 6 | 13 | Ventura | 2022 | Intel + Apple Silicon |
-| 7 | 14 | Sonoma | 2023 | Intel + Apple Silicon |
-| 8 | 15 | Sequoia | 2024 | Intel + Apple Silicon |
-| 9 | 26 | Tahoe | 2025 | Intel + Apple Silicon — **current latest** |
+That does not prove runtime compatibility on every older macOS release. The current frontend build target is Safari 13 for macOS builds, so the realistic runtime floor needs older-device testing before the app claims true macOS 10.13 support.
 
-¹ Big Sur (11) was the first macOS to run on Apple Silicon.
+Current status:
 
-That is **9 released major versions** of coverage.
+| Category | Status |
+|---|---|
+| Configured minimum | macOS 10.13 |
+| Binary load command | macOS 10.13 |
+| Verified runtime minimum | macOS 12.7.6 Intel |
+| macOS 10.13-11.x runtime | Not verified |
+| Apple Silicon runtime | Not verified in this session |
 
-## Architecture details
+## Architecture Strategy
 
-- **Intel Macs** run the `x86_64` slice, valid from 10.13 up to macOS 26 (Tahoe).
-- **Apple Silicon Macs (M1–M4 and later)** run the `arm64` slice. These devices all ship with macOS 11+ regardless, so 11 is their effective floor.
+The release workflow builds separate DMGs:
 
-## Upcoming macOS versions
+- `PrintPilot-0.1.0-macos-x86_64.dmg` on an Intel macOS runner.
+- `PrintPilot-0.1.0-macos-aarch64.dmg` on an Apple Silicon macOS runner.
 
-- **macOS 26 (Tahoe)** is the **last macOS to support Intel Macs**. The Intel slice is fully covered here.
-- **macOS 27 ("Golden Gate")** ships in late 2026 and is **Apple Silicon only**. The app still runs on it through the `arm64` slice; there is simply no Intel hardware on that OS.
+Separate architecture artifacts are the release path until a universal build is actually produced and inspected.
 
-## Building for all Macs
+## Local Intel Verification
 
-Produce one app that runs natively on both Intel and Apple Silicon:
+Verified on this machine:
+
+- Host: Intel `x86_64`.
+- OS: macOS `12.7.6`.
+- App bundle: `src-tauri/target/x86_64-apple-darwin/release/bundle/macos/PrintPilot.app`.
+- DMG: `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/PrintPilot_0.1.0_x64.dmg`.
+- Executable: Mach-O 64-bit `x86_64`.
+- Code signing: not signed.
+- DMG mount: verified read-only; contains `PrintPilot.app`.
+- Launch smoke test: process started and stayed running until manually stopped.
+
+## Build Commands
 
 ```bash
-rustup target add x86_64-apple-darwin aarch64-apple-darwin
+npm run lint
+npx tsc --noEmit
+npx vite build --outDir /private/tmp/printpilot-vite-release-dist --emptyOutDir
+cd src-tauri && cargo test && cargo check
+cd ..
+npm run tauri -- build --target x86_64-apple-darwin
+```
+
+Apple Silicon should be built natively on an arm64 macOS runner or an Apple Silicon Mac:
+
+```bash
+npm run tauri -- build --target aarch64-apple-darwin
+```
+
+Universal builds are not release-approved until verified:
+
+```bash
 npm run tauri:build:mac
 ```
 
-This runs `tauri build --target universal-apple-darwin` and emits a universal `.app` and `.dmg`.
+## Unsigned Test Releases
 
-> A plain `npm run tauri:build` on an Apple Silicon Mac produces an `arm64`-only app that will **not** run on Intel Macs. Use `tauri:build:mac` for distribution.
+Current DMGs are unsigned and unnotarized. Gatekeeper warnings are expected.
 
-## Notes and caveats
+For local test installs, open the DMG, copy `PrintPilot.app` to `/Applications`, then right-click the app and choose `Open`. Do not disable Gatekeeper globally.
 
-- **10.13 is a hard floor.** Nothing can make a Tauri v2 app run on macOS 10.12 (Sierra) or older.
-- **Security updates.** Apple no longer patches 10.13/10.14. To support only versions Apple still maintains, raise `minimumSystemVersion` to `"10.15"` (Catalina) in `tauri.conf.json` — a one-line change.
-- **Verification.** The support range above is the configured target. The definitive check is running `npm run tauri:build:mac` on an actual Mac.
+## Release Workflow
+
+The GitHub Actions `Release` workflow:
+
+- runs only for `v*` tags and manual dispatch;
+- uses `npm ci` with `package-lock.json`;
+- uses `cargo test --locked` and `cargo check --locked`;
+- builds Intel and Apple Silicon DMGs on separate macOS runners;
+- verifies executable architecture;
+- mounts the DMG and checks for `PrintPilot.app`;
+- generates SHA-256 checksum files;
+- uploads workflow artifacts;
+- attaches DMGs and checksums to a draft GitHub Release for tag builds.
+
+## Known macOS Release Limitations
+
+- Signing and notarization are not configured.
+- Apple Silicon DMG output still needs a successful GitHub Actions run or Mac mini M4 build.
+- Universal DMG output is unverified.
+- Runtime compatibility below macOS 12.7.6 is not proven.
+- Tauri warns that the bundle identifier `com.printpilot.app` ends in `.app`, which is not recommended for macOS bundle identifiers.
 
 ## Sources
 
-- [macOS Application Bundle — Tauri v2](https://v2.tauri.app/distribute/macos-application-bundle/)
-- [Every macOS version — Macworld](https://www.macworld.com/article/672681/list-of-all-macos-versions-including-the-latest-macos.html)
-- [Apple macOS end-of-life dates](https://endoflife.date/macos)
+- Tauri v2 configuration reference: `bundle.macOS.minimumSystemVersion` defaults to `10.13`.
+- GitHub Actions hosted runner reference: current macOS Intel labels include `macos-15-intel`; current macOS arm64 labels include `macos-15`.

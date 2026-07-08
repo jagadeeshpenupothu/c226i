@@ -150,11 +150,87 @@ class FakeD1Statement {
       return { success: true, meta: { changes: user ? 1 : 0 } };
     }
 
+    if (normalized.startsWith("UPDATE documents SET status = ?")) {
+      const [status, updatedAt, documentId] = this.values;
+      const document = this.db.documents.get(documentId);
+      if (document) {
+        document.status = status;
+        document.updated_at = updatedAt;
+      }
+      return { success: true, meta: { changes: document ? 1 : 0 } };
+    }
+
+    if (normalized.startsWith("INSERT INTO multipart_uploads")) {
+      const [document_id, owner_uid, upload_id, storage_key, status, created_at, updated_at] = this.values;
+      if (this.db.multipartUploads.has(document_id)) {
+        throw new Error("unique multipart upload constraint");
+      }
+      this.db.multipartUploads.set(document_id, {
+        document_id,
+        owner_uid,
+        upload_id,
+        storage_key,
+        status,
+        created_at,
+        updated_at,
+        completed_at: null,
+        aborted_at: null
+      });
+      return { success: true };
+    }
+
+    if (normalized.startsWith("INSERT OR REPLACE INTO multipart_upload_parts")) {
+      const [document_id, part_number, etag, byte_size, uploaded_at] = this.values;
+      this.db.multipartParts.set(`${document_id}:${part_number}`, {
+        document_id,
+        part_number,
+        etag,
+        byte_size,
+        uploaded_at
+      });
+      return { success: true };
+    }
+
+    if (normalized.startsWith("UPDATE multipart_uploads SET status = 'completed'")) {
+      const [updatedAt, completedAt, documentId] = this.values;
+      const upload = this.db.multipartUploads.get(documentId);
+      if (!upload || upload.status !== "active") {
+        return { success: true, meta: { changes: 0 } };
+      }
+      upload.status = "completed";
+      upload.updated_at = updatedAt;
+      upload.completed_at = completedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith("UPDATE multipart_uploads SET status = 'aborted'")) {
+      const [updatedAt, abortedAt, documentId] = this.values;
+      const upload = this.db.multipartUploads.get(documentId);
+      if (upload) {
+        upload.status = "aborted";
+        upload.updated_at = updatedAt;
+        upload.aborted_at = abortedAt;
+      }
+      return { success: true, meta: { changes: upload ? 1 : 0 } };
+    }
+
+    if (normalized.startsWith("DELETE FROM multipart_upload_parts")) {
+      const [documentId] = this.values;
+      for (const key of [...this.db.multipartParts.keys()]) {
+        if (key.startsWith(`${documentId}:`)) this.db.multipartParts.delete(key);
+      }
+      return { success: true };
+    }
+
     throw new Error(`Unhandled fake D1 run: ${normalized}`);
   }
 
   async first() {
     const normalized = this.sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT document_id") && normalized.includes("FROM multipart_uploads")) {
+      return this.db.multipartUploads.get(this.values[0]) ?? null;
+    }
+
     if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE document_id = ?")) {
       return this.db.documents.get(this.values[0]) ?? null;
     }
@@ -184,6 +260,11 @@ class FakeD1Statement {
       };
     }
 
+    if (normalized.startsWith("SELECT etag")) {
+      const [documentId, partNumber] = this.values;
+      return this.db.multipartParts.get(`${documentId}:${partNumber}`) ?? null;
+    }
+
     throw new Error(`Unhandled fake D1 first: ${normalized}`);
   }
 }
@@ -192,6 +273,8 @@ class FakeD1Database {
   constructor() {
     this.users = new Map();
     this.documents = new Map();
+    this.multipartUploads = new Map();
+    this.multipartParts = new Map();
   }
 
   prepare(sql) {
@@ -224,9 +307,27 @@ async function reserve(input, env = makeEnv(), payloadOverrides = {}) {
   }, env);
 }
 
+async function reserveDocument(env = makeEnv(), input = validReserveInput, payloadOverrides = {}) {
+  const result = await reserve(input, env, payloadOverrides);
+  assert.equal(result.response.status, 200);
+  return result.body.document;
+}
+
+async function authRequest(path, init = {}, env = makeEnv(), payloadOverrides = {}) {
+  return request(path, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      ...(await authHeaders(payloadOverrides))
+    }
+  }, env);
+}
+
 class FakeR2Bucket {
   constructor() {
     this.objects = new Map();
+    this.multipartUploads = new Map();
+    this.nextUploadId = 1;
   }
 
   async put(key, value) {
@@ -241,6 +342,49 @@ class FakeR2Bucket {
 
   async delete(key) {
     this.objects.delete(key);
+  }
+
+  async createMultipartUpload(key) {
+    const uploadId = `upload-${this.nextUploadId}`;
+    this.nextUploadId += 1;
+    const state = {
+      key,
+      uploadId,
+      status: "active",
+      parts: new Map()
+    };
+    this.multipartUploads.set(uploadId, state);
+    return this.resumeMultipartUpload(key, uploadId);
+  }
+
+  resumeMultipartUpload(key, uploadId) {
+    const state = this.multipartUploads.get(uploadId);
+    if (!state || state.key !== key) throw new Error("missing multipart upload");
+    return {
+      key,
+      uploadId,
+      uploadPart: async (partNumber, body) => {
+        if (state.status !== "active") throw new Error("multipart upload is not active");
+        assert.ok(body, "multipart upload received a streaming body");
+        const etag = `etag-${uploadId}-${partNumber}`;
+        state.parts.set(partNumber, { partNumber, etag, body });
+        return { etag };
+      },
+      complete: async (parts) => {
+        if (state.status !== "active") throw new Error("multipart upload is not active");
+        for (const part of parts) {
+          const uploaded = state.parts.get(part.partNumber);
+          if (!uploaded || uploaded.etag !== part.etag) throw new Error("missing part");
+        }
+        state.status = "completed";
+        this.objects.set(key, { multipart: true, parts });
+        return { key };
+      },
+      abort: async () => {
+        state.status = "aborted";
+        state.parts.clear();
+      }
+    };
   }
 }
 
@@ -484,5 +628,192 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     assert.deepEqual(statuses, [200, 409]);
     assert.equal(env.PRINTPILOT_DB.users.get("user-123").reserved_bytes, 800);
     assert.equal(env.PRINTPILOT_DB.documents.size, 1);
+  });
+
+  test("multipart upload initiate succeeds for an owned active reservation", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.repeated, false);
+    assert.equal(body.upload.documentId, document.documentId);
+    assert.equal(body.upload.status, "active");
+    assert.equal(body.upload.storageKey, document.storageKey);
+    assert.equal(env.PRINTPILOT_DB.documents.get(document.documentId).status, "uploading");
+  });
+
+  test("multipart upload initiate rejects unauthenticated requests", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    const { response, body } = await request(`/v1/archive/${document.documentId}/upload/initiate`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 401);
+    assert.equal(body.ok, false);
+  });
+
+  test("multipart upload initiate enforces reservation ownership", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, {
+      method: "POST"
+    }, env, { sub: "other-user" });
+
+    assert.equal(response.status, 403);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "reservation_forbidden");
+  });
+
+  test("multipart upload initiate rejects non-active reservations", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    env.PRINTPILOT_DB.documents.get(document.documentId).status = "failed";
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "reservation_not_active");
+  });
+
+  test("multipart upload accepts a streamed part", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part-one"
+    }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.partNumber, 1);
+    assert.equal(body.etag, "etag-upload-1-1");
+    assert.equal(env.PRINTPILOT_DB.multipartParts.get(`${document.documentId}:1`).etag, body.etag);
+  });
+
+  test("multipart upload rejects invalid part number and oversized part", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+
+    const invalidPart = await authRequest(`/v1/archive/${document.documentId}/upload/parts/0`, {
+      method: "PUT",
+      body: "part"
+    }, env);
+    assert.equal(invalidPart.response.status, 400);
+    assert.equal(invalidPart.body.error, "invalid_part_number");
+
+    const oversized = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      headers: { "content-length": String(64 * 1024 * 1024 + 1) },
+      body: "part"
+    }, env);
+    assert.equal(oversized.response.status, 400);
+    assert.equal(oversized.body.error, "invalid_part_size");
+  });
+
+  test("multipart upload completes with validated uploaded parts", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part-one"
+    }, env);
+
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: part.body.etag }] })
+    }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.repeated, false);
+    assert.equal(body.upload.status, "completed");
+    assert.equal(env.PRINTPILOT_ARCHIVE.objects.has(document.storageKey), true);
+  });
+
+  test("multipart upload complete rejects missing or invalid parts", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+
+    const missing = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: "missing" }] })
+    }, env);
+    assert.equal(missing.response.status, 400);
+    assert.equal(missing.body.error, "missing_upload_part");
+
+    const invalid = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+      method: "POST",
+      body: JSON.stringify({ parts: [] })
+    }, env);
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.body.error, "invalid_parts");
+  });
+
+  test("multipart upload repeated complete is safe", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part-one"
+    }, env);
+    const completeInput = {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: part.body.etag }] })
+    };
+
+    const first = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, completeInput, env);
+    const second = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, completeInput, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.repeated, true);
+    assert.equal(second.body.upload.status, "completed");
+  });
+
+  test("multipart upload abort succeeds and repeated abort is safe", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part-one"
+    }, env);
+
+    const first = await authRequest(`/v1/archive/${document.documentId}/upload/abort`, { method: "POST" }, env);
+    const second = await authRequest(`/v1/archive/${document.documentId}/upload/abort`, { method: "POST" }, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(first.body.upload.status, "aborted");
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.repeated, true);
+    assert.equal(env.PRINTPILOT_DB.multipartParts.size, 0);
+    assert.equal(env.PRINTPILOT_DB.documents.get(document.documentId).status, "reserved");
+  });
+
+  test("multipart upload rejects cross-user part upload access", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env);
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part-one"
+    }, env, { sub: "other-user" });
+
+    assert.equal(response.status, 403);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "reservation_forbidden");
   });
 });

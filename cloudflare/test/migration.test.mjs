@@ -50,6 +50,7 @@ describe("Cloudflare D1 migrations", () => {
     insertDocument(db, "probe-c", duplicateSha, "2026-07-08T00:00:03.000Z");
 
     db.exec(migration("0002_reservations.sql"));
+    db.exec(migration("0003_multipart_uploads.sql"));
 
     const rows = db.prepare("SELECT document_id, sha256 FROM documents ORDER BY created_at").all();
     assert.equal(rows.length, 3);
@@ -68,6 +69,21 @@ describe("Cloudflare D1 migrations", () => {
     assert.throws(() => {
       insertDocument(db, "probe-d", rows[0].sha256, "2026-07-08T00:00:04.000Z");
     }, /UNIQUE constraint failed/);
+
+    db.prepare(
+      `INSERT INTO multipart_uploads (
+         document_id, owner_uid, upload_id, storage_key, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "probe-a",
+      "local-single-user",
+      "upload-1",
+      "users/local-single-user/documents/probe-a/original.pdf",
+      "active",
+      "2026-07-08T00:00:05.000Z",
+      "2026-07-08T00:00:05.000Z"
+    );
+    const upload = db.prepare("SELECT status FROM multipart_uploads WHERE document_id = ?").get("probe-a");
+    assert.equal(upload.status, "active");
   });
 });
-

@@ -1,5 +1,11 @@
 import { verifyFirebaseIdToken } from "./auth.js";
 import { ArchiveError, reserveArchiveDocument } from "./archiveRepository.js";
+import {
+  abortMultipartUpload,
+  completeMultipartUpload,
+  initiateMultipartUpload,
+  uploadMultipartPart
+} from "./uploadRepository.js";
 
 const SERVICE_NAME = "printpilot-cloudflare-local";
 const DEV_UID = "local-single-user";
@@ -132,6 +138,7 @@ async function handleR2Probe(env) {
 
 async function fetch(request, env) {
   const url = new URL(request.url);
+  const uploadRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/upload(?:\/([^/]+)(?:\/([^/]+))?)?$/);
 
   if (request.method === "GET" && url.pathname === "/health") {
     return json({
@@ -164,6 +171,32 @@ async function fetch(request, env) {
     try {
       const result = await reserveArchiveDocument(env.PRINTPILOT_DB, auth.uid, await readJsonBody(request));
       return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (uploadRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    const [, documentId, action, partNumber] = uploadRoute;
+    try {
+      if (request.method === "POST" && action === "initiate") {
+        const result = await initiateMultipartUpload(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, documentId);
+        return json({ ok: true, ...result });
+      }
+      if (request.method === "PUT" && action === "parts") {
+        const result = await uploadMultipartPart(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, documentId, partNumber, request);
+        return json({ ok: true, ...result });
+      }
+      if (request.method === "POST" && action === "complete") {
+        const result = await completeMultipartUpload(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, documentId, await readJsonBody(request));
+        return json({ ok: true, ...result });
+      }
+      if (request.method === "POST" && action === "abort") {
+        const result = await abortMultipartUpload(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, documentId);
+        return json({ ok: true, ...result });
+      }
     } catch (error) {
       return errorResponse(error);
     }

@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const BASE_URL = "http://127.0.0.1:8787";
+const LOCAL_R2_BUCKET = "printpilot-local-archive-preview";
 const WORKSPACE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const WRANGLER_HOME = join(WORKSPACE_DIR, ".wrangler-home");
 const WRANGLER_ENV = { ...process.env, HOME: WRANGLER_HOME };
@@ -185,7 +186,7 @@ async function runMultipartArchiveSmoke(token) {
       "r2",
       "object",
       "get",
-      `printpilot-local-archive/${storageKey}`,
+      `${LOCAL_R2_BUCKET}/${storageKey}`,
       "--local",
       "--file",
       outputFile

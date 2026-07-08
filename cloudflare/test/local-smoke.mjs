@@ -20,7 +20,7 @@ const TEST_PUBLIC_JWK = {
 };
 const TEST_PRIVATE_JWK = {
   ...TEST_PUBLIC_JWK,
-  d: "Abm0KAzkvqsnXo69ZTg-Kvk0HWPJurSho1hw5XVB5BYe43a9sB6JAGk9WwUjdCsS6ctoQPgLhwhMjdlDeYAyhqiBqGT7zc-PoqH5IowHbofgANTUJ1WcXMaO_428Asc7CYdcyDbeoQ1LNNZrZJzygU1GOLdN9u9ig9GVMIuvLBrQv05jkFJ5pxO_O_7AjdoIKtHw06bQqmHq3D1y4F7T",
+  d: "Abm0KAzkvqsnXo69ZTg-Kvk0HWPJurSho1hw5XVB5BYe43a9sB6JAGk9WwUjdCsS6ctoQPgLhwhMjdlDeYAyhqiBqGT7zc-PoqH5IowHbofgANTUJ1WcXMaO_428Asc7CYdcyDbeoQ1LNNZrZJzygU1GOLdN9u9ig9GVMIuvLBrQv05jkpxw1ObEsSolVxcRkpAY1Cyn8mgTqxqNgWIt-RsoEgxdudkBzBucETxnRcsEa_lJuAvV918aBX7mfJCd48PlaxyUpDZZF5wQkdi1tpiwGBTXJB3zld5IasxlEg4lCx_jkFJ5pxO_O_7AjdoIKtHw06bQqmHq3D1y4F7T",
   p: "4XE3T8lBhVJtzMRvd722j4KbdB0EYULiiwTHP-9bPPIRsGESqkJt9y5clftg-ZHBkDSLUTMghx1Iewwl34xEh_FeAvzBnPjiuSE2L9_KM3bvi0rwOyom40_bOIyygDVsGpbSwn9PCyrn0K4kLojlWA4fQzVMKP_bmT10l8nV3wc",
   q: "yAlTAjnkPx3tklALpAforpFeyHoXwkCcy4waH3pUigk4zZCuKYQY8JXh10mh8_0mCb8x0an206bIPpwYo0GT4XQHoThFpyYe22Tf8zD0pJ3K9vmlpksJjvd3cI8z8b__sEbO95aGwYfA1Z-769PWfnlYFkiRWaGEqJXglE7ji68",
   dp: "jPGoYAR2JzEinmuNOPJtyYkhQVXG4DvdwIZLP8iYZSD-OCRoc_O2Jlxg3A_eUAl1V3_SPgDV7EM9hlhQ8VMToV4gpYN6VHYx4QZHh2TFWKmaF57RVFwFFgZeCxvDmW5M2M7Ek37eXyAC8C9_RWym3gduOil_JP7ZPxPx6dfxE08",
@@ -86,15 +86,6 @@ function removeLocalAuthVars() {
   if (existsSync(path)) unlinkSync(path);
 }
 
-function streamFromBytes(bytes) {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    }
-  });
-}
-
 function startWorker() {
   const child = spawn(
     "npx",
@@ -145,7 +136,12 @@ async function readAuthenticatedJson(path, token, init = {}) {
 
 async function runMultipartArchiveSmoke(token) {
   const runId = crypto.randomUUID();
-  const pdfBytes = new TextEncoder().encode(`%PDF-1.7\n% PrintPilot local multipart smoke ${runId}\n%%EOF\n`);
+  const prefix = new TextEncoder().encode(`%PDF-1.7\n% PrintPilot local multipart smoke ${runId}\n`);
+  const suffix = new TextEncoder().encode("\n%%EOF\n");
+  const pdfBytes = new Uint8Array(5 * 1024 * 1024);
+  pdfBytes.set(prefix, 0);
+  pdfBytes.fill(0x20, prefix.byteLength, pdfBytes.byteLength - suffix.byteLength);
+  pdfBytes.set(suffix, pdfBytes.byteLength - suffix.byteLength);
   const sha256 = createHash("sha256").update(pdfBytes).digest("hex");
   const reservation = await readAuthenticatedJson("/v1/archive/reserve", token, {
     method: "POST",
@@ -169,8 +165,8 @@ async function runMultipartArchiveSmoke(token) {
 
   const part = await readAuthenticatedJson(`/v1/archive/${documentId}/upload/parts/1`, token, {
     method: "PUT",
-    body: streamFromBytes(pdfBytes),
-    duplex: "half"
+    headers: { "content-length": String(pdfBytes.byteLength) },
+    body: pdfBytes
   });
   assert.equal(part.partNumber, 1);
   assert.equal(typeof part.etag, "string");

@@ -43,7 +43,7 @@ function validatePartNumber(partNumber) {
 
 function validateContentLength(request) {
   const header = request.headers.get("content-length");
-  if (!header) return null;
+  if (!header) badRequest("invalid_part_size");
   const byteSize = Number(header);
   if (!Number.isSafeInteger(byteSize) || byteSize <= 0 || byteSize > MAX_PART_BYTES) {
     badRequest("invalid_part_size");
@@ -245,4 +245,3 @@ export async function abortMultipartUpload(db, bucket, uid, documentId) {
     repeated: false
   };
 }
-

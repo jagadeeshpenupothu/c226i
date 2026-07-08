@@ -688,6 +688,7 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
     const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
       method: "PUT",
+      headers: { "content-length": "8" },
       body: "part-one"
     }, env);
 
@@ -703,8 +704,16 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     const document = await reserveDocument(env);
     await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
 
+    const missingLength = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+      method: "PUT",
+      body: "part"
+    }, env);
+    assert.equal(missingLength.response.status, 400);
+    assert.equal(missingLength.body.error, "invalid_part_size");
+
     const invalidPart = await authRequest(`/v1/archive/${document.documentId}/upload/parts/0`, {
       method: "PUT",
+      headers: { "content-length": "4" },
       body: "part"
     }, env);
     assert.equal(invalidPart.response.status, 400);
@@ -725,6 +734,7 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
     const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
       method: "PUT",
+      headers: { "content-length": "8" },
       body: "part-one"
     }, env);
 
@@ -766,6 +776,7 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
     const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
       method: "PUT",
+      headers: { "content-length": "8" },
       body: "part-one"
     }, env);
     const completeInput = {
@@ -788,6 +799,7 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
     await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
       method: "PUT",
+      headers: { "content-length": "8" },
       body: "part-one"
     }, env);
 
@@ -809,6 +821,7 @@ describe("PrintPilot Cloudflare Worker probes", () => {
 
     const { response, body } = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
       method: "PUT",
+      headers: { "content-length": "8" },
       body: "part-one"
     }, env, { sub: "other-user" });
 

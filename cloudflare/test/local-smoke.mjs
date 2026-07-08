@@ -146,6 +146,9 @@ async function authenticatedFetch(path, token, init = {}) {
 }
 
 async function runMultipartArchiveSmoke(token) {
+  const baselineQuota = await readAuthenticatedJson("/v1/account/quota", token);
+  const baselineUsedBytes = baselineQuota.quota.used_bytes;
+  const baselineReservedBytes = baselineQuota.quota.reserved_bytes;
   const runId = crypto.randomUUID();
   const prefix = new TextEncoder().encode(`%PDF-1.7\n% PrintPilot local multipart smoke ${runId}\n`);
   const suffix = new TextEncoder().encode("\n%%EOF\n");
@@ -169,6 +172,9 @@ async function runMultipartArchiveSmoke(token) {
 
   const documentId = reservation.document.documentId;
   const storageKey = reservation.document.storageKey;
+  assert.equal(reservation.quota.used_bytes, baselineUsedBytes);
+  assert.equal(reservation.quota.reserved_bytes, baselineReservedBytes + pdfBytes.byteLength);
+
   const initiated = await readAuthenticatedJson(`/v1/archive/${documentId}/upload/initiate`, token, {
     method: "POST"
   });
@@ -193,18 +199,19 @@ async function runMultipartArchiveSmoke(token) {
     method: "POST"
   });
   assert.equal(finalized.document.status, "synced");
-  assert.equal(finalized.quota.reserved_bytes, 0);
-  assert.equal(finalized.quota.used_bytes, pdfBytes.byteLength);
+  assert.equal(finalized.quota.reserved_bytes, baselineReservedBytes);
+  assert.equal(finalized.quota.used_bytes, baselineUsedBytes + pdfBytes.byteLength);
 
   const repeatedFinalize = await readAuthenticatedJson(`/v1/archive/${documentId}/finalize`, token, {
     method: "POST"
   });
   assert.equal(repeatedFinalize.repeated, true);
-  assert.equal(repeatedFinalize.quota.used_bytes, pdfBytes.byteLength);
+  assert.equal(repeatedFinalize.quota.reserved_bytes, baselineReservedBytes);
+  assert.equal(repeatedFinalize.quota.used_bytes, baselineUsedBytes + pdfBytes.byteLength);
 
   const quota = await readAuthenticatedJson("/v1/account/quota", token);
-  assert.equal(quota.quota.used_bytes, pdfBytes.byteLength);
-  assert.equal(quota.quota.reserved_bytes, 0);
+  assert.equal(quota.quota.used_bytes, baselineUsedBytes + pdfBytes.byteLength);
+  assert.equal(quota.quota.reserved_bytes, baselineReservedBytes);
 
   const list = await readAuthenticatedJson("/v1/documents", token);
   assert.ok(list.documents.some((document) => document.documentId === documentId));
@@ -238,12 +245,15 @@ async function runMultipartArchiveSmoke(token) {
     method: "DELETE"
   });
   assert.equal(deleted.deleted, true);
-  assert.equal(deleted.quota.used_bytes, 0);
+  assert.equal(deleted.quota.used_bytes, baselineUsedBytes);
+  assert.equal(deleted.quota.reserved_bytes, baselineReservedBytes);
 
   const repeatedDelete = await readAuthenticatedJson(`/v1/archive/${documentId}`, token, {
     method: "DELETE"
   });
   assert.equal(repeatedDelete.repeated, true);
+  assert.equal(repeatedDelete.quota.used_bytes, baselineUsedBytes);
+  assert.equal(repeatedDelete.quota.reserved_bytes, baselineReservedBytes);
 }
 
 writeLocalAuthVars();

@@ -1,5 +1,5 @@
 import { verifyFirebaseIdToken } from "./auth.js";
-import { ArchiveError, reserveArchiveDocument } from "./archiveRepository.js";
+import { ArchiveError, finalizeArchiveDocument, reserveArchiveDocument } from "./archiveRepository.js";
 import {
   abortMultipartUpload,
   completeMultipartUpload,
@@ -139,6 +139,7 @@ async function handleR2Probe(env) {
 async function fetch(request, env) {
   const url = new URL(request.url);
   const uploadRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/upload(?:\/([^/]+)(?:\/([^/]+))?)?$/);
+  const finalizeRoute = url.pathname.match(/^\/v1\/archive\/([^/]+)\/finalize$/);
 
   if (request.method === "GET" && url.pathname === "/health") {
     return json({
@@ -170,6 +171,17 @@ async function fetch(request, env) {
     if (!auth) return unauthorized();
     try {
       const result = await reserveArchiveDocument(env.PRINTPILOT_DB, auth.uid, await readJsonBody(request));
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (request.method === "POST" && finalizeRoute) {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    try {
+      const result = await finalizeArchiveDocument(env.PRINTPILOT_DB, env.PRINTPILOT_ARCHIVE, auth.uid, finalizeRoute[1]);
       return json({ ok: true, ...result });
     } catch (error) {
       return errorResponse(error);

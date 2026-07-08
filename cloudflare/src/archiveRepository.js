@@ -17,6 +17,14 @@ function conflict(code) {
   throw new ArchiveError(409, code);
 }
 
+function forbidden(code) {
+  throw new ArchiveError(403, code);
+}
+
+function notFound(code) {
+  throw new ArchiveError(404, code);
+}
+
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -123,6 +131,18 @@ async function readUsage(db, uid) {
     .first();
 }
 
+async function findDocumentById(db, documentId) {
+  return db.prepare(
+    `SELECT document_id, owner_uid, sha256, storage_key, original_file_name, display_name,
+            content_type, byte_size, page_count, status, idempotency_key,
+            created_at, updated_at, last_opened_at
+     FROM documents
+     WHERE document_id = ?`
+  )
+    .bind(documentId)
+    .first();
+}
+
 async function reserveQuota(db, uid, byteSize, now) {
   const result = await db.prepare(
     `UPDATE users
@@ -225,5 +245,71 @@ export async function reserveArchiveDocument(db, uid, rawInput) {
   };
 }
 
-export { ArchiveError };
+async function findMultipartUpload(db, documentId) {
+  return db.prepare(
+    `SELECT status
+     FROM multipart_uploads
+     WHERE document_id = ?`
+  )
+    .bind(documentId)
+    .first();
+}
 
+async function moveReservedToUsed(db, uid, byteSize, now) {
+  const result = await db.prepare(
+    `UPDATE users
+     SET used_bytes = used_bytes + ?,
+         reserved_bytes = reserved_bytes - ?,
+         updated_at = ?
+     WHERE uid = ? AND reserved_bytes >= ?`
+  )
+    .bind(byteSize, byteSize, now, uid, byteSize)
+    .run();
+  if (changes(result) !== 1) conflict("quota_accounting_failed");
+}
+
+async function markDocumentSynced(db, documentId, now) {
+  const result = await db.prepare(
+    `UPDATE documents
+     SET status = 'synced', updated_at = ?, last_opened_at = ?
+     WHERE document_id = ? AND status = 'uploading'`
+  )
+    .bind(now, now, documentId)
+    .run();
+  if (changes(result) !== 1) conflict("document_state_changed");
+}
+
+export async function finalizeArchiveDocument(db, bucket, uid, documentId) {
+  const document = await findDocumentById(db, documentId);
+  if (!document) notFound("reservation_not_found");
+  if (document.owner_uid !== uid) forbidden("reservation_forbidden");
+  if (document.status === "synced") {
+    return {
+      finalized: true,
+      repeated: true,
+      document: mapDocument(document),
+      quota: await readUsage(db, uid)
+    };
+  }
+  if (document.status !== "uploading") conflict("reservation_not_ready");
+
+  const upload = await findMultipartUpload(db, documentId);
+  if (!upload || upload.status !== "completed") conflict("upload_not_completed");
+
+  const object = await bucket.get(document.storage_key);
+  if (!object) conflict("r2_object_missing");
+  const objectSize = object.size ?? object.uploaded?.size;
+  if (objectSize !== document.byte_size) conflict("r2_size_mismatch");
+
+  const now = new Date().toISOString();
+  await moveReservedToUsed(db, uid, document.byte_size, now);
+  await markDocumentSynced(db, documentId, now);
+  return {
+    finalized: true,
+    repeated: false,
+    document: mapDocument(await findDocumentById(db, documentId)),
+    quota: await readUsage(db, uid)
+  };
+}
+
+export { ArchiveError };

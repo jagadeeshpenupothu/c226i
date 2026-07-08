@@ -140,6 +140,18 @@ class FakeD1Statement {
       return { success: true, meta: { changes: 1 } };
     }
 
+    if (normalized.startsWith("UPDATE users SET used_bytes = used_bytes +")) {
+      const [usedBytes, reservedBytes, updatedAt, uid, minimumReservedBytes] = this.values;
+      const user = this.db.users.get(uid);
+      if (!user || user.reserved_bytes < minimumReservedBytes) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      user.used_bytes += usedBytes;
+      user.reserved_bytes -= reservedBytes;
+      user.updated_at = updatedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+
     if (normalized.startsWith("UPDATE users SET reserved_bytes = MAX")) {
       const [byteSize, updatedAt, uid] = this.values;
       const user = this.db.users.get(uid);
@@ -158,6 +170,18 @@ class FakeD1Statement {
         document.updated_at = updatedAt;
       }
       return { success: true, meta: { changes: document ? 1 : 0 } };
+    }
+
+    if (normalized.startsWith("UPDATE documents SET status = 'synced'")) {
+      const [updatedAt, lastOpenedAt, documentId] = this.values;
+      const document = this.db.documents.get(documentId);
+      if (!document || document.status !== "uploading") {
+        return { success: true, meta: { changes: 0 } };
+      }
+      document.status = "synced";
+      document.updated_at = updatedAt;
+      document.last_opened_at = lastOpenedAt;
+      return { success: true, meta: { changes: 1 } };
     }
 
     if (normalized.startsWith("INSERT INTO multipart_uploads")) {
@@ -233,6 +257,11 @@ class FakeD1Statement {
 
     if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE document_id = ?")) {
       return this.db.documents.get(this.values[0]) ?? null;
+    }
+
+    if (normalized.startsWith("SELECT status") && normalized.includes("FROM multipart_uploads")) {
+      const upload = this.db.multipartUploads.get(this.values[0]);
+      return upload ? { status: upload.status } : null;
     }
 
     if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE owner_uid = ? AND idempotency_key = ?")) {
@@ -323,6 +352,28 @@ async function authRequest(path, init = {}, env = makeEnv(), payloadOverrides = 
   }, env);
 }
 
+async function completeSmallUpload(env = makeEnv(), payloadOverrides = {}) {
+  const input = {
+    ...validReserveInput,
+    sha256: "f".repeat(64),
+    byteSize: 8,
+    idempotencyKey: `finalize-${crypto.randomUUID()}`
+  };
+  const document = await reserveDocument(env, input, payloadOverrides);
+  await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env, payloadOverrides);
+  const part = await authRequest(`/v1/archive/${document.documentId}/upload/parts/1`, {
+    method: "PUT",
+    headers: { "content-length": "8" },
+    body: "part-one"
+  }, env, payloadOverrides);
+  const completed = await authRequest(`/v1/archive/${document.documentId}/upload/complete`, {
+    method: "POST",
+    body: JSON.stringify({ parts: [{ partNumber: 1, etag: part.body.etag }] })
+  }, env, payloadOverrides);
+  assert.equal(completed.response.status, 200);
+  return document;
+}
+
 class FakeR2Bucket {
   constructor() {
     this.objects = new Map();
@@ -337,7 +388,9 @@ class FakeR2Bucket {
   async get(key) {
     const value = this.objects.get(key);
     if (value === undefined) return null;
-    return { text: async () => value };
+    if (typeof value === "string") return { size: value.length, text: async () => value };
+    if (value?.bytes) return { size: value.bytes.byteLength, arrayBuffer: async () => value.bytes.buffer };
+    return { size: value?.size ?? 0, text: async () => String(value) };
   }
 
   async delete(key) {
@@ -367,7 +420,8 @@ class FakeR2Bucket {
         if (state.status !== "active") throw new Error("multipart upload is not active");
         assert.ok(body, "multipart upload received a streaming body");
         const etag = `etag-${uploadId}-${partNumber}`;
-        state.parts.set(partNumber, { partNumber, etag, body });
+        const byteSize = await countStreamBytes(body);
+        state.parts.set(partNumber, { partNumber, etag, byteSize });
         return { etag };
       },
       complete: async (parts) => {
@@ -377,7 +431,8 @@ class FakeR2Bucket {
           if (!uploaded || uploaded.etag !== part.etag) throw new Error("missing part");
         }
         state.status = "completed";
-        this.objects.set(key, { multipart: true, parts });
+        const size = [...state.parts.values()].reduce((sum, part) => sum + (part.byteSize ?? 0), 0);
+        this.objects.set(key, { multipart: true, parts, size });
         return { key };
       },
       abort: async () => {
@@ -385,6 +440,20 @@ class FakeR2Bucket {
         state.parts.clear();
       }
     };
+  }
+}
+
+async function countStreamBytes(body) {
+  const reader = body.getReader();
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return total;
+    if (typeof value === "string") {
+      total += Buffer.byteLength(value);
+    } else {
+      total += value.byteLength;
+    }
   }
 }
 
@@ -828,5 +897,122 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     assert.equal(response.status, 403);
     assert.equal(body.ok, false);
     assert.equal(body.error, "reservation_forbidden");
+  });
+
+  test("archive finalize succeeds after completed multipart upload", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.finalized, true);
+    assert.equal(body.repeated, false);
+    assert.equal(body.document.status, "synced");
+  });
+
+  test("archive finalize rejects unauthenticated requests", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    const { response, body } = await request(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 401);
+    assert.equal(body.ok, false);
+  });
+
+  test("archive finalize rejects cross-user access", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env, { sub: "other-user" });
+
+    assert.equal(response.status, 403);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "reservation_forbidden");
+  });
+
+  test("archive finalize before multipart completion is rejected", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env, { ...validReserveInput, byteSize: 8, idempotencyKey: "not-complete" });
+    await authRequest(`/v1/archive/${document.documentId}/upload/initiate`, { method: "POST" }, env);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "upload_not_completed");
+  });
+
+  test("archive finalize rejects missing R2 object", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    env.PRINTPILOT_ARCHIVE.objects.delete(document.storageKey);
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "r2_object_missing");
+  });
+
+  test("archive finalize rejects R2 size mismatch", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    env.PRINTPILOT_ARCHIVE.objects.set(document.storageKey, { size: 7 });
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "r2_size_mismatch");
+  });
+
+  test("archive finalize moves reserved bytes to used bytes exactly once", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    const userBefore = env.PRINTPILOT_DB.users.get("user-123");
+    assert.equal(userBefore.reserved_bytes, 8);
+    assert.equal(userBefore.used_bytes, 0);
+
+    await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env);
+
+    const userAfter = env.PRINTPILOT_DB.users.get("user-123");
+    assert.equal(userAfter.reserved_bytes, 0);
+    assert.equal(userAfter.used_bytes, 8);
+  });
+
+  test("archive repeated finalize is successful and does not double-count storage", async () => {
+    const env = makeEnv();
+    const document = await completeSmallUpload(env);
+    const first = await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env);
+    const second = await authRequest(`/v1/archive/${document.documentId}/finalize`, { method: "POST" }, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.repeated, true);
+    const user = env.PRINTPILOT_DB.users.get("user-123");
+    assert.equal(user.reserved_bytes, 0);
+    assert.equal(user.used_bytes, 8);
+  });
+
+  test("archive finalize rejects invalid reservation state", async () => {
+    const env = makeEnv();
+    const document = await reserveDocument(env, { ...validReserveInput, byteSize: 8, idempotencyKey: "failed-state" });
+    env.PRINTPILOT_DB.documents.get(document.documentId).status = "failed";
+    const { response, body } = await authRequest(`/v1/archive/${document.documentId}/finalize`, {
+      method: "POST"
+    }, env);
+
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "reservation_not_ready");
   });
 });

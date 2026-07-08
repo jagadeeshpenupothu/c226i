@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "staging": "<printpilot-staging-project-id>",
+    "production": "<printpilot-production-project-id>"
+  }
+}

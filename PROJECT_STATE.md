@@ -977,3 +977,119 @@ Current phase:
 Exact next step:
 
 - Run a controlled live Firebase staging smoke test with billing budgets and App Check configured, after explicit approval.
+
+## 29. Firebase Live Staging Preparation Update
+
+Update date: 2026-07-08
+
+Primary goal completed:
+
+- Prepared the repository for a controlled manual Firebase staging setup and future live smoke test.
+- No Firebase deployment was performed.
+- No billing changes were made.
+- No paid resources were created.
+- No release tag or GitHub Release was created.
+- No printer functionality was modified.
+- `native-macos/` remains untracked and untouched.
+
+Firebase CLI and project audit:
+
+- Global `firebase` command is not installed on `PATH`.
+- Local Firebase CLI via `npx firebase --version`: `15.22.4`.
+- `npx firebase login:list` with an isolated config directory reports no authorized accounts.
+- `npx firebase projects:list` is blocked because no Firebase account or application-default credentials are available.
+- `npx firebase use` is blocked by missing credentials and no active project.
+- `npx firebase target` reports no active project and cannot list deploy targets.
+- `.firebaserc` is absent, so no live project alias or default project is configured in the repository.
+
+Chosen staging strategy:
+
+- Use a separate Firebase staging project.
+- Recommended alias: `staging`.
+- Recommended display name: `PrintPilot Staging`.
+- Production should use a separate Firebase project and a separate `production` alias only after production approval.
+- The committed repository includes `.firebaserc.example` only; the real `.firebaserc` should remain local and uncommitted.
+
+Live deployment safety audit:
+
+- Missing Firebase config still fails safely into guest/local-only mode.
+- Emulator tests explicitly require emulator host variables and project `printpilot-emulator-test`.
+- Production/staging Firebase endpoints are only reachable when Vite Firebase env vars are provided.
+- Firestore client writes to documents, quota, and hash index remain denied by rules.
+- Storage writes are owner-scoped, PDF-only, and capped at 500 MB by rules.
+- Trusted callable Functions enforce owner checks, per-user dedupe, quota reservation, finalization, and delete accounting.
+- Cloud Functions use the SDK default region unless explicitly changed before deployment.
+- App Check is not yet wired into the Tauri client.
+
+Billing and Spark/Blaze status:
+
+- Authentication email/password can be tested on Firebase no-cost tiers subject to current limits.
+- Firestore can be tested on Firebase no-cost tiers subject to current limits.
+- Storage can be tested on Firebase no-cost tiers subject to current limits.
+- Emulator Suite remains local and no-cost.
+- App Check is no-cost subject to provider quotas and limits.
+- Cloud Functions live deployment is treated as blocked until Blaze eligibility and budget alerts are explicitly approved.
+- Current pricing details must be checked against official Firebase and Google Cloud docs immediately before any live deployment.
+
+App Check findings:
+
+- PrintPilot is a Tauri desktop app using Firebase web SDKs in a webview.
+- Standard web reCAPTCHA App Check should not be treated as strong desktop app attestation.
+- Staging should use App Check debug provider only on controlled machines.
+- Production should combine App Check with authenticated Functions, owner checks, per-user quotas, monitoring, and server-side rate limiting.
+
+Budget and abuse protection plan:
+
+- Recommended staging budget after explicit billing approval: low alert-only budget, such as USD 5 to USD 10.
+- Recommended alert thresholds: 50 percent, 90 percent, 100 percent, and 150 percent.
+- Budgets alert but do not automatically cap spending.
+- Monitor Storage bytes/egress/operations, Functions invocations/errors, and Firestore reads/writes/deletes.
+- Keep one automatic upload attempt per selected local file.
+- Add exponential retry backoff and callable rate limits before broader rollout.
+- Preserve 500 MB per-PDF and 5 GB per-user quota enforcement.
+
+Deployment scripts added:
+
+- `scripts/firebase-deploy.mjs`
+- `.firebaserc.example`
+- `npm run firebase:deploy:staging:rules`
+- `npm run firebase:deploy:staging:indexes`
+- `npm run firebase:deploy:staging:functions`
+- `npm run firebase:deploy:staging`
+- `npm run firebase:deploy:production:*` commands are separate and require `PRINTPILOT_CONFIRM_PRODUCTION_DEPLOY=deploy-production`.
+
+Documentation added:
+
+- `docs/FIREBASE_STAGING_DEPLOYMENT.md`
+
+Deployment blockers:
+
+- No authenticated Firebase CLI account available in this environment.
+- No real Firebase project could be listed or audited locally.
+- No `.firebaserc` alias exists yet.
+- Actual project plan, display name, billing plan, Auth provider state, Firestore database, Storage bucket, Functions deployment state, App Check state, and budget alerts require manual Firebase Console verification.
+- Cloud Functions deployment remains blocked if the project is Spark and not eligible for Functions deployment.
+
+Live smoke test plan:
+
+- See `docs/FIREBASE_STAGING_DEPLOYMENT.md`.
+- Scope includes Account A upload/dedupe/quota, Account B isolation, network failure/retry, delete/idempotency, and cross-Mac validation.
+- Do not run the live smoke test until manual staging setup is approved.
+
+Latest verification for this update:
+
+- `npm run firebase:deploy:staging:rules`: blocked safely before deployment because `.firebaserc` is missing.
+- `npx tsc --noEmit`: pass.
+- `npm run lint`: pass after adding Node globals for `scripts/**/*.mjs`.
+- `npx vite build --outDir /private/tmp/printpilot-firebase-staging-prep-dist --emptyOutDir`: pass with known PDF.js eval and large chunk warnings.
+- `cd src-tauri && cargo test`: pass, 12 passed and 1 ignored.
+- `cd src-tauri && cargo check`: pass with known transitive `block v0.1.6` future-incompat warning.
+- `npm --prefix functions run build`: pass.
+- `npm audit --prefix functions --audit-level=high`: pass high-severity gate; moderate transitive Firebase Admin `uuid` advisories remain.
+- `npm run test:firebase:emulator`: pass, 14 passed, 0 failed, 1 skipped. First sandboxed attempt failed on localhost port binding; escalated local emulator run passed and no deployment occurred.
+- Printer diagnostics regression: pass through `cargo test`; real-printer ignored diagnostic capture was not run.
+- DMG pipeline integrity: release workflow files were not modified.
+
+Exact next step:
+
+- Manually create or select the separate Firebase staging project and configure the local `.firebaserc` staging alias; do not deploy yet.

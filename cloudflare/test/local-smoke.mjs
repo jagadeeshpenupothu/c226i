@@ -217,7 +217,9 @@ async function runMultipartArchiveSmoke(token) {
   assert.ok(list.documents.some((document) => document.documentId === documentId));
 
   const download = await authenticatedFetch(`/v1/archive/${documentId}/download`, token);
-  assert.equal(download.ok, true, `download failed: ${await download.text()}`);
+  if (!download.ok) {
+    assert.fail(`download failed: ${await download.text()}`);
+  }
   const downloadedBytes = Buffer.from(await download.arrayBuffer());
   assert.equal(downloadedBytes.byteLength, pdfBytes.byteLength);
   assert.equal(Buffer.compare(downloadedBytes, Buffer.from(pdfBytes)), 0);

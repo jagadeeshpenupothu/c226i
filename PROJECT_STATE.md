@@ -34,32 +34,63 @@ Local verification on Intel MacBook Pro:
 - Launch smoke test: PASS; process started and remained running until stopped.
 
 Artifact status:
-- Intel `x86_64-apple-darwin`: locally built and verified.
-- Apple Silicon `aarch64-apple-darwin`: configured in GitHub Actions for native arm64 macOS runner; not locally verified.
+- Intel `x86_64-apple-darwin`: locally built and verified; remotely built and verified by GitHub Actions workflow run `28915392315`.
+- Apple Silicon `aarch64-apple-darwin`: remotely built and verified by GitHub Actions workflow run `28915392315`; not locally launched on Apple Silicon hardware.
 - Universal macOS DMG: not verified; do not publish a universal artifact until an actual universal build is produced and inspected.
 
 GitHub Actions status:
 - `.github/workflows/release.yml` updated to focus on macOS DMGs.
 - Release workflow runs on `v*` tags and manual dispatch.
 - Workflow uses `npm ci`, lint, TypeScript check, external Vite build, `cargo test --locked`, `cargo check --locked`, native Tauri DMG build, architecture verification, DMG mount/content verification, checksum generation, workflow artifact upload, and draft GitHub Release attachment for tag builds.
-- GitHub workflow itself has not been remotely executed in this session.
-- No tag was created and nothing was pushed.
+- Pushed `main` to `origin` at commit `46da8a27eceffb42bb268209f8bcf323b5db1cba`.
+- Manual `workflow_dispatch` run succeeded.
+- Workflow run ID: `28915392315`.
+- Workflow run URL: `https://github.com/jagadeeshpenupothu/c226i/actions/runs/28915392315`.
+- Run head SHA: `46da8a27eceffb42bb268209f8bcf323b5db1cba`.
+- No tag was created.
+- No production release was created.
+- Draft-release attach step was skipped as expected for manual dispatch.
+
+Remote workflow verification:
+- Apple Silicon job `85781259658`: PASS in 4m49s.
+- Intel job `85781259662`: PASS in 14m45s.
+- Apple Silicon runner evidence: GitHub runner image `macos-15-arm64`, Node artifact `darwin-arm64`, Rust cache key `Darwin-arm64`, Rust target `aarch64-apple-darwin`.
+- Intel runner evidence: Node artifact `darwin-x64`, Rust cache key `Darwin-x64`, Rust target `x86_64-apple-darwin`.
+- Apple Silicon binary evidence: `lipo -info` reported `arm64`; `file` reported `Mach-O 64-bit executable arm64`.
+- Intel binary evidence: `lipo -info` reported `x86_64`; `file` reported `Mach-O 64-bit executable x86_64`.
+- Apple Silicon deployment target evidence: `LC_BUILD_VERSION` minos `11.0`.
+- Intel deployment target evidence: `LC_VERSION_MIN_MACOSX` version `10.13`.
+- Apple Silicon code-signing state: ad hoc/linker-signed, no TeamIdentifier.
+- Intel code-signing state: not signed.
+- Remote DMG mount/content verification: PASS for both architecture jobs; each mounted read-only and contained `PrintPilot.app`.
+- Workflow artifacts uploaded:
+  - `PrintPilot-0.1.0-macos-x86_64.dmg`, artifact ID `8157597095`, artifact zip digest `sha256:36af74397fbe36d0ec3717983e13599350077ae8025d1114c9982ed9f0d1d118`.
+  - `PrintPilot-0.1.0-macos-aarch64.dmg`, artifact ID `8157487039`, artifact zip digest `sha256:b28f52761e6152b33b050dd8dd523849d625f15cd77c83b340962195e3b11109`.
+- Downloaded artifacts to `/private/tmp/printpilot-remote-dmg-artifacts`.
+- Downloaded Intel DMG checksum verified: `0aaa6d78fb6c7a1b94bf5d70b113adfbd7c1996383ce360c9e65fceb66c0c6e0`.
+- Downloaded Apple Silicon DMG checksum verified: `dc9a7f253f325545a9b11e50f8619b826909ea943b97e65fd0259123a8deaeb9`.
+- Downloaded DMG local mount checks: PASS for both Intel and Apple Silicon artifacts; each mounted read-only and contained `PrintPilot.app`.
+- Workflow warnings:
+  - GitHub Actions reported Node.js 20 deprecation for `actions/checkout@v4`, `actions/setup-node@v4`, and `actions/upload-artifact@v4`, forced to run on Node 24.
+  - Node emitted `punycode` deprecation warnings in setup/upload/cache actions.
+  - Vite retained existing PDF.js `eval` and large chunk warnings during production builds.
 
 macOS compatibility status:
 - Configured minimum macOS: `10.13`.
 - Binary encoded minimum macOS: `10.13`.
 - Verified runtime minimum macOS: `12.7.6` on Intel.
+- Remote Apple Silicon binary encoded minimum macOS: `11.0`.
 - Frontend build target for macOS: Safari 13, so runtime support below macOS 12.7.6 remains unproven without older-device testing.
 
 Signing and release blockers:
 - Signing/notarization are not configured.
 - Unsigned/unnotarized Gatekeeper warnings are expected.
-- Apple Silicon artifact requires a successful GitHub Actions arm64 run or a native Mac mini M4 build.
+- Apple Silicon artifact is remotely built and verified by GitHub Actions, but has not been manually installed/launched on the Mac mini M4.
 - Universal artifact remains unverified.
 - Bundle identifier `com.printpilot.app` triggers a Tauri warning because it ends in `.app`; this was documented but not changed during this release task.
 
 Exact next step:
-- Push the committed workflow/docs changes and manually run the GitHub Actions `Release` workflow to verify both macOS DMG artifacts before creating a release tag.
+- Manually download the two workflow artifacts from run `28915392315` on the target Intel MacBook Pro and Mac mini M4, install each unsigned app via Finder right-click Open, and confirm the UI launches.
 
 ## 1. Executive Summary
 

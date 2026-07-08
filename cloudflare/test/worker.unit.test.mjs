@@ -90,10 +90,26 @@ class FakeD1Statement {
         byte_size,
         page_count,
         status,
-        created_at,
-        updated_at,
-        last_opened_at
+        maybe_idempotency_key,
+        maybe_created_at,
+        maybe_updated_at,
+        maybe_last_opened_at
       ] = this.values;
+      const hasIdempotencyKey = this.values.length === 14;
+      const idempotency_key = hasIdempotencyKey ? maybe_idempotency_key : null;
+      const created_at = hasIdempotencyKey ? maybe_created_at : maybe_idempotency_key;
+      const updated_at = hasIdempotencyKey ? maybe_updated_at : maybe_created_at;
+      const last_opened_at = hasIdempotencyKey ? maybe_last_opened_at : maybe_updated_at;
+
+      for (const document of this.db.documents.values()) {
+        if (document.owner_uid === owner_uid && document.sha256 === sha256) {
+          throw new Error("unique sha256 constraint");
+        }
+        if (idempotency_key && document.owner_uid === owner_uid && document.idempotency_key === idempotency_key) {
+          throw new Error("unique idempotency constraint");
+        }
+      }
+
       this.db.documents.set(document_id, {
         document_id,
         owner_uid,
@@ -105,6 +121,7 @@ class FakeD1Statement {
         byte_size,
         page_count,
         status,
+        idempotency_key,
         created_at,
         updated_at,
         last_opened_at
@@ -112,13 +129,48 @@ class FakeD1Statement {
       return { success: true };
     }
 
+    if (normalized.startsWith("UPDATE users SET reserved_bytes = reserved_bytes +")) {
+      const [byteSize, updatedAt, uid, requestedBytes] = this.values;
+      const user = this.db.users.get(uid);
+      if (!user || user.used_bytes + user.reserved_bytes + requestedBytes > user.quota_bytes) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      user.reserved_bytes += byteSize;
+      user.updated_at = updatedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith("UPDATE users SET reserved_bytes = MAX")) {
+      const [byteSize, updatedAt, uid] = this.values;
+      const user = this.db.users.get(uid);
+      if (user) {
+        user.reserved_bytes = Math.max(user.reserved_bytes - byteSize, 0);
+        user.updated_at = updatedAt;
+      }
+      return { success: true, meta: { changes: user ? 1 : 0 } };
+    }
+
     throw new Error(`Unhandled fake D1 run: ${normalized}`);
   }
 
   async first() {
     const normalized = this.sql.replace(/\s+/g, " ").trim();
-    if (normalized.startsWith("SELECT document_id")) {
+    if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE document_id = ?")) {
       return this.db.documents.get(this.values[0]) ?? null;
+    }
+
+    if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE owner_uid = ? AND idempotency_key = ?")) {
+      const [uid, idempotencyKey] = this.values;
+      return [...this.db.documents.values()].find((document) => (
+        document.owner_uid === uid && document.idempotency_key === idempotencyKey
+      )) ?? null;
+    }
+
+    if (normalized.startsWith("SELECT document_id") && normalized.includes("WHERE owner_uid = ? AND sha256 = ?")) {
+      const [uid, sha256] = this.values;
+      return [...this.db.documents.values()].find((document) => (
+        document.owner_uid === uid && document.sha256 === sha256
+      )) ?? null;
     }
 
     if (normalized.startsWith("SELECT owner_uid")) {
@@ -145,6 +197,31 @@ class FakeD1Database {
   prepare(sql) {
     return new FakeD1Statement(this, sql);
   }
+}
+
+const validReserveInput = {
+  sha256: "a".repeat(64),
+  originalFileName: "proof.pdf",
+  displayName: "Proof",
+  byteSize: 1024,
+  pageCount: 2,
+  idempotencyKey: "reserve-1"
+};
+
+async function authHeaders(payloadOverrides = {}) {
+  const token = await signFirebaseToken(payloadOverrides);
+  return {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json"
+  };
+}
+
+async function reserve(input, env = makeEnv(), payloadOverrides = {}) {
+  return request("/v1/archive/reserve", {
+    method: "POST",
+    headers: await authHeaders(payloadOverrides),
+    body: JSON.stringify(input)
+  }, env);
 }
 
 class FakeR2Bucket {
@@ -277,5 +354,135 @@ describe("PrintPilot Cloudflare Worker probes", () => {
     });
     assert.equal(response.status, 401);
     assert.equal(body.ok, false);
+  });
+
+  test("archive reserve creates user storage row and document metadata", async () => {
+    const env = makeEnv();
+    const { response, body } = await reserve(validReserveInput, env);
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.duplicate, false);
+    assert.equal(body.idempotent, false);
+    assert.equal(body.document.ownerUid, "user-123");
+    assert.equal(body.document.sha256, validReserveInput.sha256);
+    assert.equal(body.document.storageKey, `users/user-123/documents/${body.document.documentId}/original.pdf`);
+    assert.equal(body.document.byteSize, validReserveInput.byteSize);
+    assert.equal(body.quota.used_bytes, 0);
+    assert.equal(body.quota.reserved_bytes, validReserveInput.byteSize);
+    assert.equal(body.quota.quota_bytes, 5_368_709_120);
+  });
+
+  test("archive reserve deduplicates same-user SHA-256 without reserving quota twice", async () => {
+    const env = makeEnv();
+    const first = await reserve(validReserveInput, env);
+    const second = await reserve({
+      ...validReserveInput,
+      originalFileName: "again.pdf",
+      displayName: "Again",
+      byteSize: 4096,
+      idempotencyKey: "reserve-duplicate-sha"
+    }, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.duplicate, true);
+    assert.equal(second.body.idempotent, false);
+    assert.equal(second.body.document.documentId, first.body.document.documentId);
+    assert.equal(second.body.quota.reserved_bytes, validReserveInput.byteSize);
+  });
+
+  test("archive reserve rejects reservation exceeding the 5 GiB logical quota", async () => {
+    const env = makeEnv();
+    env.PRINTPILOT_DB.users.set("user-123", {
+      uid: "user-123",
+      quota_bytes: 5_368_709_120,
+      used_bytes: 0,
+      reserved_bytes: 5_368_709_100,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+
+    const { response, body } = await reserve({
+      ...validReserveInput,
+      byteSize: 25,
+      idempotencyKey: "over-quota"
+    }, env);
+    assert.equal(response.status, 409);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "quota_exceeded");
+  });
+
+  test("archive reserve repeats with the same idempotency key safely", async () => {
+    const env = makeEnv();
+    const first = await reserve(validReserveInput, env);
+    const second = await reserve(validReserveInput, env);
+
+    assert.equal(first.response.status, 200);
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.idempotent, true);
+    assert.equal(second.body.duplicate, true);
+    assert.equal(second.body.document.documentId, first.body.document.documentId);
+    assert.equal(second.body.quota.reserved_bytes, validReserveInput.byteSize);
+  });
+
+  test("archive reserve rejects invalid SHA-256", async () => {
+    const { response, body } = await reserve({
+      ...validReserveInput,
+      sha256: "not-a-sha",
+      idempotencyKey: "invalid-sha"
+    });
+    assert.equal(response.status, 400);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "invalid_sha256");
+  });
+
+  test("archive reserve rejects invalid PDF byte sizes", async () => {
+    for (const [byteSize, idempotencyKey, sha256] of [
+      [0, "zero", "0".repeat(64)],
+      [-1, "negative", "1".repeat(64)],
+      [524_288_001, "over-500mb", "2".repeat(64)]
+    ]) {
+      const { response, body } = await reserve({
+        ...validReserveInput,
+        sha256,
+        byteSize,
+        idempotencyKey
+      });
+      assert.equal(response.status, 400);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, "invalid_byte_size");
+    }
+  });
+
+  test("archive reserve rejects unauthenticated requests", async () => {
+    const { response, body } = await request("/v1/archive/reserve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validReserveInput)
+    });
+    assert.equal(response.status, 401);
+    assert.equal(body.ok, false);
+  });
+
+  test("archive reserve cannot over-reserve quota with concurrent requests", async () => {
+    const env = makeEnv();
+    env.PRINTPILOT_DB.users.set("user-123", {
+      uid: "user-123",
+      quota_bytes: 1_200,
+      used_bytes: 0,
+      reserved_bytes: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+
+    const [first, second] = await Promise.all([
+      reserve({ ...validReserveInput, sha256: "1".repeat(64), byteSize: 800, idempotencyKey: "race-a" }, env),
+      reserve({ ...validReserveInput, sha256: "2".repeat(64), byteSize: 800, idempotencyKey: "race-b" }, env)
+    ]);
+
+    const statuses = [first.response.status, second.response.status].sort();
+    assert.deepEqual(statuses, [200, 409]);
+    assert.equal(env.PRINTPILOT_DB.users.get("user-123").reserved_bytes, 800);
+    assert.equal(env.PRINTPILOT_DB.documents.size, 1);
   });
 });

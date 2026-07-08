@@ -1,4 +1,5 @@
 import { verifyFirebaseIdToken } from "./auth.js";
+import { ArchiveError, reserveArchiveDocument } from "./archiveRepository.js";
 
 const SERVICE_NAME = "printpilot-cloudflare-local";
 const DEV_UID = "local-single-user";
@@ -22,10 +23,34 @@ function unauthorized() {
   return json({ ok: false, error: "unauthorized" }, 401);
 }
 
+function errorResponse(error) {
+  if (error instanceof ArchiveError) {
+    return json({ ok: false, error: error.code }, error.status);
+  }
+  return json({ ok: false, error: "internal_error" }, 500);
+}
+
+async function authenticate(request, env) {
+  try {
+    return await verifyFirebaseIdToken(request, env);
+  } catch {
+    return null;
+  }
+}
+
+async function readJsonBody(request) {
+  try {
+    return await request.json();
+  } catch {
+    throw new ArchiveError(400, "invalid_json");
+  }
+}
+
 async function handleD1Probe(env) {
   const documentId = crypto.randomUUID();
   const storageKey = `users/${DEV_UID}/documents/${documentId}/original.pdf`;
   const now = new Date().toISOString();
+  const sha256 = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
   await env.PRINTPILOT_DB.prepare(
     `INSERT OR IGNORE INTO users (uid, quota_bytes, used_bytes, reserved_bytes, created_at, updated_at)
@@ -44,7 +69,7 @@ async function handleD1Probe(env) {
     .bind(
       documentId,
       DEV_UID,
-      "0".repeat(64),
+      sha256,
       storageKey,
       "local-probe.pdf",
       "local-probe.pdf",
@@ -128,11 +153,19 @@ async function fetch(request, env) {
   }
 
   if (request.method === "GET" && url.pathname === "/probe/auth") {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
+    return json({ ok: true, uid: auth.uid });
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/archive/reserve") {
+    const auth = await authenticate(request, env);
+    if (!auth) return unauthorized();
     try {
-      const auth = await verifyFirebaseIdToken(request, env);
-      return json({ ok: true, uid: auth.uid });
-    } catch {
-      return unauthorized();
+      const result = await reserveArchiveDocument(env.PRINTPILOT_DB, auth.uid, await readJsonBody(request));
+      return json({ ok: true, ...result });
+    } catch (error) {
+      return errorResponse(error);
     }
   }
 

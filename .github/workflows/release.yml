@@ -151,11 +151,11 @@ jobs:
           prerelease: false
           name: PrintPilot ${{ github.ref_name }}
           body: |
-            PrintPilot v1.0.0 for macOS.
+            PrintPilot v1.0.1 for macOS.
 
             Artifacts:
-            - PrintPilot-1.0.0-macos-x86_64.dmg for Intel Macs
-            - PrintPilot-1.0.0-macos-aarch64.dmg for Apple Silicon Macs
+            - PrintPilot-1.0.1-macos-x86_64.dmg for Intel Macs
+            - PrintPilot-1.0.1-macos-aarch64.dmg for Apple Silicon Macs
 
             The apps are not notarized. macOS Gatekeeper will warn on first launch.
           files: |

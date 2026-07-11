@@ -14,6 +14,10 @@ functions/lib/
 .env
 .env.local
 .env.*.local
+client_secret*.json
+oauth-client*.json
+google-oauth*.json
+google_credentials*.json
 
 # Generated installer binaries — distribute via GitHub Releases, not git.
 # The installers/ folder keeps only its README docs under version control.

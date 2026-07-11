@@ -10,6 +10,7 @@ import { PdfOverviewThumbnail } from "./PdfOverviewThumbnail";
 
 interface PdfDocumentOverviewProps {
   file: PdfFile;
+  documentIdentity: string;
   document: PDFDocumentProxy;
   pageCount: number;
   firstPage: PdfPageSize;
@@ -25,6 +26,7 @@ const MAX_PAGES_PER_ROW = 10;
 
 export function PdfDocumentOverview({
   file,
+  documentIdentity,
   document,
   pageCount,
   firstPage,
@@ -141,6 +143,7 @@ export function PdfDocumentOverview({
                 }}
               >
                 <PdfOverviewThumbnail
+                  documentIdentity={documentIdentity}
                   document={document}
                   isSelected={selectedPage === pageNumber}
                   isVisible

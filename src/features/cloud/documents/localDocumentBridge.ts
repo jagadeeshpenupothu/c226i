@@ -33,6 +33,27 @@ export async function downloadCloudPdfToCache(documentId: string, downloadUrl: s
   });
 }
 
+export async function uploadCloudflarePdfPart(input: {
+  workerBaseUrl: string;
+  idToken: string;
+  documentId: string;
+  path: string;
+  partNumber: number;
+  offset: number;
+  byteSize: number;
+}): Promise<{ partNumber: number; etag: string; byteSize: number }> {
+  return safeInvoke("upload_cloudflare_pdf_part", input);
+}
+
+export async function downloadCloudflarePdfToCache(input: {
+  workerBaseUrl: string;
+  idToken: string;
+  documentId: string;
+  expectedSha256: string;
+}): Promise<PdfValidationResult> {
+  return safeInvoke<PdfValidationResult>("download_cloudflare_pdf_to_cache", input);
+}
+
 export async function removeCloudCachedPdf(documentId: string): Promise<void> {
   await safeInvoke<void>("remove_cloud_cached_pdf", { documentId });
 }

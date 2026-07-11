@@ -7,6 +7,7 @@ import { computeSheetLayout } from "@/services/layout/layoutEngine";
 import type { PrintPaperPreview } from "@/services/pdf/printPreview";
 
 interface PdfOverviewThumbnailProps {
+  documentIdentity: string;
   document: PDFDocumentProxy;
   pageNumber: number;
   isVisible: boolean;
@@ -26,6 +27,7 @@ interface ThumbnailCacheEntry {
 const thumbnailCache = new Map<string, ThumbnailCacheEntry>();
 
 export function PdfOverviewThumbnail({
+  documentIdentity,
   document,
   pageNumber,
   isVisible,
@@ -39,7 +41,7 @@ export function PdfOverviewThumbnail({
   const renderTaskRef = useRef<RenderTask | null>(null);
   const [pageSize, setPageSize] = useState<{ widthPt: number; heightPt: number } | null>(null);
   const [isRendered, setIsRendered] = useState(false);
-  const cacheKey = `${document.fingerprints?.[0] || "pdf"}-grid-${pageNumber}`;
+  const cacheKey = `${documentIdentity}-${document.fingerprints?.[0] || "pdf"}-grid-${pageNumber}`;
 
   // Same engine as the full preview — the grid tile is just a miniature sheet.
   const sheetLayout = useMemo(
@@ -61,6 +63,15 @@ export function PdfOverviewThumbnail({
         bottom: `${(sheetLayout.margins.bottom / sheet.heightPt) * 100}%`
       } as CSSProperties)
     : undefined;
+
+  useEffect(() => {
+    setPageSize(null);
+    setIsRendered(false);
+    renderTaskRef.current?.cancel();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  }, [documentIdentity, pageNumber]);
 
   useEffect(() => {
     let cancelled = false;

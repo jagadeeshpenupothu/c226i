@@ -1,4 +1,4 @@
-import { BookMarked, ChevronRight, Copy, FileText, Gauge, Inbox, Layers, LayoutDashboard, Palette, Printer, RectangleHorizontal, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { BookMarked, BookOpen, ChevronRight, Copy, FileText, Gauge, Inbox, Layers, LayoutDashboard, Palette, Printer, RectangleHorizontal, RefreshCw, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ import { PrinterSelector, type Printer as PrinterEntity } from "@/features/print
 import { ProfileSelector, type PrintProfile } from "@/features/profiles";
 import type { CapabilityChoice, DriverCapability, PrinterCapabilities } from "@/features/printers/types";
 import { type PrintSettings } from "./types";
+import { validatePageSelection } from "./pageSelection";
 
 interface SettingsPanelProps {
   printers: PrinterEntity[];
@@ -36,6 +37,8 @@ interface SettingsPanelProps {
   canPrint: boolean;
   isPrinting: boolean;
   printDisabledReason: string | null;
+  pageCount: number;
+  currentPage: number;
   onRefresh: () => void;
   onOpenPrinterDashboard: () => void;
   onApplyProfile: (profile: PrintProfile) => void;
@@ -93,6 +96,8 @@ export function SettingsPanel({
   canPrint,
   isPrinting,
   printDisabledReason,
+  pageCount,
+  currentPage,
   onRefresh,
   onOpenPrinterDashboard,
   onApplyProfile,
@@ -124,6 +129,9 @@ export function SettingsPanel({
   function setLayoutValue<K extends keyof PrintLayout>(key: K, value: PrintLayout[K]) {
     onLayoutChange({ ...layout, [key]: value });
   }
+  function patchLayout(next: Partial<PrintLayout>) {
+    onLayoutChange({ ...layout, ...next });
+  }
   function toggleCat(id: CategoryId) {
     setOpenCats((current) => ({ ...current, [id]: !current[id] }));
   }
@@ -132,6 +140,12 @@ export function SettingsPanel({
   const matches = (text: string) => !query || text.toLowerCase().includes(query);
 
   const copies = Number(settings.copies) || 1;
+  const pageValidation = validatePageSelection({
+    mode: settings.pageSelectionMode || "all",
+    value: settings.pageSelection || "",
+    currentPage,
+    pageCount
+  });
   const jobSummary = [
     choiceLabel(paperChoices, settings.paperSize),
     choiceLabel(capabilities?.colorModes, settings.colorMode),
@@ -188,12 +202,68 @@ export function SettingsPanel({
       {/* Scrollable settings — only this region scrolls */}
       <ScrollableContainer className="px-4 pb-3 pt-1">
         <SettingsGroup title="Print Settings">
+          <SettingRow icon={BookOpen} label="Layout" info="Booklet modes generate an imposed PDF preview before printing with ordinary duplex.">
+            <Select
+              aria-label="Print layout"
+              value={layout.pageLayout === "presentation-booklet" || layout.pageLayout === "booklet" ? layout.pageLayout : "single"}
+              onChange={(event) => setLayoutValue("pageLayout", event.target.value as PrintLayout["pageLayout"])}
+            >
+              <option value="single">Standard</option>
+              <option value="booklet">Normal Booklet</option>
+              <option value="presentation-booklet">Presentation Booklet</option>
+            </Select>
+          </SettingRow>
+          {(layout.pageLayout === "presentation-booklet" || layout.pageLayout === "booklet") && (
+            <SettingRow icon={BookOpen} label="Pin Guides" info="Light center-fold marks for manual pinning or stapling.">
+              <Select
+                aria-label="Center pin guides"
+                value={layout.pinGuideCount}
+                onChange={(event) => setLayoutValue("pinGuideCount", Number(event.target.value) as PrintLayout["pinGuideCount"])}
+              >
+                <option value={0}>Off</option>
+                <option value={1}>1 pin</option>
+                <option value={2}>2 pins</option>
+                <option value={3}>3 pins</option>
+                <option value={4}>4 pins</option>
+              </Select>
+            </SettingRow>
+          )}
           <SettingRow icon={Copy} label="Copies" info={INFO.copies}>
             <NumberInput label="Copies" value={copies} min={1} max={999} onChange={(value) => patch({ copies: clampInt(value, 1, 999) })} />
           </SettingRow>
           <SettingRow icon={FileText} label="Paper Size" info={INFO.paperSize}>
             <ChoiceSelect label="Paper Size" value={settings.paperSize} choices={paperChoices} placeholder={naPlaceholder} onChange={(value) => patch({ paperSize: value })} />
           </SettingRow>
+          <SettingRow icon={FileText} label="Paper Type" info={INFO.paperType}>
+            <ChoiceSelect label="Paper Type" value={settings.paperWeight} choices={capabilities?.paperTypes || []} placeholder={naPlaceholder} onChange={(value) => patch({ paperWeight: value })} />
+          </SettingRow>
+          {layout.pageLayout !== "presentation-booklet" && layout.pageLayout !== "booklet" && <SettingRow icon={FileText} label="Pages" info="Choose all pages, the current page, or a page list like 1,3-5,8.">
+            <div className="grid gap-2">
+              <Segmented<NonNullable<PrintSettings["pageSelectionMode"]>>
+                label="Pages"
+                value={settings.pageSelectionMode || "all"}
+                options={[
+                  { value: "all", label: "All" },
+                  { value: "current", label: "Current" },
+                  { value: "custom", label: "Range" }
+                ]}
+                onChange={(value) => patch({ pageSelectionMode: value })}
+              />
+              {(settings.pageSelectionMode || "all") === "custom" && (
+                <Input
+                  aria-label="Page range"
+                  placeholder="1,3-5,8"
+                  value={settings.pageSelection || ""}
+                  onChange={(event) => patch({ pageSelection: event.target.value })}
+                />
+              )}
+              {(settings.pageSelectionMode || "all") !== "all" && (
+                <p className={cn("text-[11px] leading-4", pageValidation.ok ? "text-ink-muted" : "text-error")}>
+                  {pageValidation.ok ? `${pageValidation.pages.length} selected: ${pageValidation.normalized}` : pageValidation.error}
+                </p>
+              )}
+            </div>
+          </SettingRow>}
           <SettingRow icon={Inbox} label="Tray" info={INFO.tray}>
             <ChoiceSelect label="Tray" value={settings.tray} choices={capabilities?.trays || []} placeholder={naPlaceholder} onChange={(value) => patch({ tray: value })} />
           </SettingRow>
@@ -245,10 +315,10 @@ export function SettingsPanel({
               const content = renderCategory(category.id, {
                 layout,
                 setLayoutValue,
+                patchLayout,
                 capabilities,
                 groups,
                 settings,
-                setSetting: patch,
                 setDriver,
                 naPlaceholder,
                 matches
@@ -341,16 +411,16 @@ function renderCategory(
   ctx: {
     layout: PrintLayout;
     setLayoutValue: <K extends keyof PrintLayout>(key: K, value: PrintLayout[K]) => void;
+    patchLayout: (next: Partial<PrintLayout>) => void;
     capabilities: PrinterCapabilities | null;
     groups: Record<CategoryId, DriverCapability[]>;
     settings: PrintSettings;
-    setSetting: (next: Partial<PrintSettings>) => void;
     setDriver: (keyword: string, value: string) => void;
     naPlaceholder: string;
     matches: (text: string) => boolean;
   }
 ): { node: ReactNode; count: number } {
-  const { layout, setLayoutValue, capabilities, groups, settings, setSetting, setDriver, naPlaceholder, matches } = ctx;
+  const { layout, setLayoutValue, patchLayout, capabilities, groups, settings, setDriver, naPlaceholder, matches } = ctx;
 
   if (id === "layout") {
     const rows: ReactNode[] = [];
@@ -411,17 +481,27 @@ function renderCategory(
               onChange={(value) => setLayoutValue("marginMode", value)}
             />
             {layout.marginMode === "custom" && (
-              <div className="flex items-center gap-1">
-                <Input
-                  aria-label="Custom margin millimetres"
-                  className="h-7 w-16 text-center"
-                  type="number"
-                  min={0}
-                  max={50}
-                  value={layout.customMarginMm}
-                  onChange={(event) => setLayoutValue("customMarginMm", clampInt(Number(event.target.value), 0, 50))}
-                />
-                <span className="text-xs text-ink-muted">mm</span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(["top", "right", "bottom", "left"] as const).map((side) => (
+                  <label key={side} className="grid gap-1 text-[10px] uppercase text-ink-muted">
+                    {side}
+                    <Input
+                      aria-label={`${side} margin millimetres`}
+                      className="h-7 text-center"
+                      type="number"
+                      min={0}
+                      max={50}
+                      value={layout.customMarginsMm?.[side] ?? layout.customMarginMm}
+                      onChange={(event) => {
+                        const next = clampInt(Number(event.target.value), 0, 50);
+                        patchLayout({
+                          customMarginsMm: { ...(layout.customMarginsMm || { top: layout.customMarginMm, right: layout.customMarginMm, bottom: layout.customMarginMm, left: layout.customMarginMm }), [side]: next },
+                          customMarginMm: next
+                        });
+                      }}
+                    />
+                  </label>
+                ))}
               </div>
             )}
           </div>
@@ -431,15 +511,23 @@ function renderCategory(
     if (matches("position center top-left align")) {
       rows.push(
         <SettingRow key="position" label="Position" info={INFO.position}>
-          <Segmented<PrintLayout["align"]>
-            label="Position"
-            value={layout.align}
-            options={[
-              { value: "center", label: "Center" },
-              { value: "top-left", label: "Top-Left" }
-            ]}
-            onChange={(value) => setLayoutValue("align", value)}
-          />
+          <Select aria-label="Position" value={layout.align} onChange={(event) => setLayoutValue("align", event.target.value as PrintLayout["align"])}>
+            {[
+              ["center", "Center"],
+              ["top-left", "Top-left"],
+              ["top-center", "Top-center"],
+              ["top-right", "Top-right"],
+              ["center-left", "Center-left"],
+              ["center-right", "Center-right"],
+              ["bottom-left", "Bottom-left"],
+              ["bottom-center", "Bottom-center"],
+              ["bottom-right", "Bottom-right"]
+            ].map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
         </SettingRow>
       );
     }
@@ -459,26 +547,13 @@ function renderCategory(
     };
   }
 
-  // Paper Handling leads with the printer's Paper Type, then its handling driver options.
+  // Paper Handling shows printer-specific handling driver options; the primary
+  // Paper Type control lives in the main Print Settings block.
   const driverRows: DriverCapability[] = (groups[id] || []).filter((cap) =>
     matches([cap.option.displayName, cap.option.keyword, ...(cap.searchKeywords || [])].join(" "))
   );
 
   const rows: ReactNode[] = [];
-  if (id === "paperHandling" && matches("paper type media stock")) {
-    rows.push(
-      <SettingRow key="paperType" label="Paper Type" info={INFO.paperType}>
-        <ChoiceSelect
-          label="Paper Type"
-          value={settings.paperWeight}
-          choices={capabilities?.paperTypes || []}
-          placeholder={naPlaceholder}
-          onChange={(value) => setSetting({ paperWeight: value })}
-        />
-      </SettingRow>
-    );
-  }
-
   rows.push(
     ...driverRows.map((cap) => (
       <SettingRow key={cap.option.keyword} label={cap.option.displayName || cap.option.keyword} info={optionInfo(cap, id)}>

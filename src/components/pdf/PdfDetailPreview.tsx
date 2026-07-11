@@ -43,6 +43,7 @@ interface PdfDetailPreviewProps {
   layout: PrintLayout;
   initialPage: number;
   onBack: () => void;
+  onCurrentPageChange?: (page: number) => void;
 }
 
 export function PdfDetailPreview({
@@ -54,7 +55,8 @@ export function PdfDetailPreview({
   printPaper,
   layout,
   initialPage,
-  onBack
+  onBack,
+  onCurrentPageChange
 }: PdfDetailPreviewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
@@ -119,12 +121,13 @@ export function PdfDetailPreview({
     (page: number) => {
       const nextPage = clampPage(page, pageCount);
       setCurrentPage(nextPage);
+      onCurrentPageChange?.(nextPage);
       scrollRef.current?.scrollTo({
         top: VIEWER_PADDING + (nextPage - 1) * pageStride,
         behavior: "smooth"
       });
     },
-    [pageCount, pageStride]
+    [onCurrentPageChange, pageCount, pageStride]
   );
 
   const setPresetZoom = useCallback((nextScale: number) => {
@@ -152,20 +155,22 @@ export function PdfDetailPreview({
     const firstVisible = clampPage(Math.floor(Math.max(0, element.scrollTop - VIEWER_PADDING) / pageStride) + 1, pageCount);
     const lastVisible = clampPage(Math.ceil((element.scrollTop + element.clientHeight) / pageStride), pageCount);
     setCurrentPage(firstVisible);
+    onCurrentPageChange?.(firstVisible);
     setVisibleRange({
       start: Math.max(1, firstVisible - RENDER_OVERSCAN),
       end: Math.min(pageCount, lastVisible + RENDER_OVERSCAN)
     });
-  }, [pageCount, pageStride]);
+  }, [onCurrentPageChange, pageCount, pageStride]);
 
   useEffect(() => {
     setCurrentPage(initialPage);
+    onCurrentPageChange?.(initialPage);
     setVisibleRange({
       start: Math.max(1, initialPage - RENDER_OVERSCAN),
       end: Math.min(pageCount, initialPage + RENDER_OVERSCAN)
     });
     requestAnimationFrame(() => scrollToPage(initialPage));
-  }, [initialPage, pageCount, scrollToPage]);
+  }, [initialPage, onCurrentPageChange, pageCount, scrollToPage]);
 
   useEffect(() => {
     updateVisiblePages();

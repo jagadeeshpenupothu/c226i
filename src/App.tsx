@@ -28,11 +28,13 @@ import { profileManager, ProfileLibrary, CompatibilityWarningsDialog, type Print
 import type { CapabilityChoice, PrinterCapabilities } from "@/features/printers/types";
 import { SettingsPanel } from "@/features/settings/settingsPanel";
 import type { PrintSettings } from "@/features/settings/types";
+import { validatePageSelection } from "@/features/settings/pageSelection";
 import { defaultPrintLayout, normalizePrintLayout, type PrintLayout } from "@/features/layout/types";
 import { isTauriRuntime } from "@/lib/tauri";
 import { FALLBACK_PAPER_CHOICES } from "@/services/layout/paper";
 import { readPdfFileMetadata } from "@/services/pdf/pdfMetadata";
 import { resolvePrintPaperPreview } from "@/services/pdf/printPreview";
+import { createPresentationBooklet } from "@/services/pdf/presentationBooklet";
 
 const STORAGE = {
   recent: "printpilot.recent",
@@ -237,30 +239,110 @@ export default function App() {
   });
   // Loaded document's page count, surfaced by the preview for the header readout.
   const [documentPageCount, setDocumentPageCount] = useState(0);
+  const [currentPdfPage, setCurrentPdfPage] = useState(1);
+  const [bookletPreview, setBookletPreview] = useState<PdfFile | null>(null);
+  const [bookletSheetSideCount, setBookletSheetSideCount] = useState(0);
+  const [bookletError, setBookletError] = useState<string | null>(null);
+  const [isPreparingBooklet, setIsPreparingBooklet] = useState(false);
   const selectedPrinter = printers.find((printer) => printer.id === settings.printerId);
   const hasPrinter = printers.length > 0;
   // A printer's reported media list when available; a built-in standard list
   // otherwise, so paper size / preview stay usable with no printer connected.
   const paperChoices = capabilities?.paperSizes?.length ? capabilities.paperSizes : FALLBACK_PAPER_CHOICES;
   const printPaperPreview = resolvePrintPaperPreview(settings, paperChoices);
+  const isCustomBooklet = layout.pageLayout === "presentation-booklet" || layout.pageLayout === "booklet";
+  const previewFile = isCustomBooklet ? bookletPreview || pdfFile : pdfFile;
+  const previewLayout = isCustomBooklet
+    ? {
+        ...layout,
+        pageLayout: "single" as const,
+        orientation: "landscape" as const,
+        scaleMode: "actual" as const,
+        marginMode: "none" as const,
+        align: "center" as const
+      }
+    : layout;
   const canPrint = Boolean(
     pdfFile?.path &&
+      (!isCustomBooklet || bookletPreview?.path) &&
       settings.printerId &&
       selectedPrinter?.status !== "offline" &&
       capabilities &&
       !isLoadingCapabilities &&
+      !isPreparingBooklet &&
       !isPrinting
   );
   const printDisabledReason = useMemo(() => {
     if (isPrinting) return "Sending your document to the printer…";
     if (!pdfFile?.path) return "Open a PDF to enable printing.";
+    if (isPreparingBooklet) return "Preparing the presentation booklet preview…";
+    if (isCustomBooklet && bookletError) return bookletError;
+    if (isCustomBooklet && !printPaperPreview) return "Choose a supported output paper size for the booklet.";
+    if (isCustomBooklet && !bookletPreview) return "Booklet preview is not ready.";
     if (!hasPrinter) return "Connect a printer to print — everything else is ready.";
     if (!settings.printerId) return "Select a printer to print.";
     if (selectedPrinter?.status === "offline") return "The selected printer is offline.";
     if (isLoadingCapabilities) return "Reading printer capabilities…";
     if (!capabilities) return "Printer capabilities are unavailable.";
     return null;
-  }, [capabilities, hasPrinter, isLoadingCapabilities, isPrinting, pdfFile?.path, selectedPrinter?.status, settings.printerId]);
+  }, [bookletError, bookletPreview, capabilities, hasPrinter, isCustomBooklet, isLoadingCapabilities, isPreparingBooklet, isPrinting, pdfFile?.path, printPaperPreview, selectedPrinter?.status, settings.printerId]);
+
+  useEffect(() => {
+    let active = true;
+    setBookletPreview(null);
+    setBookletSheetSideCount(0);
+    setBookletError(null);
+    if (!isCustomBooklet || !pdfFile?.path) {
+      setIsPreparingBooklet(false);
+      return () => {
+        active = false;
+      };
+    }
+    if (!printPaperPreview) {
+      setBookletError("Choose a supported output paper size for the booklet.");
+      setIsPreparingBooklet(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setIsPreparingBooklet(true);
+    const ptToMm = 25.4 / 72;
+    void createPresentationBooklet({
+      pdfPath: pdfFile.path,
+      sheetWidthMm: printPaperPreview.widthPt * ptToMm,
+      sheetHeightMm: printPaperPreview.heightPt * ptToMm,
+      pinGuideCount: layout.pinGuideCount,
+      mode: layout.pageLayout === "booklet" ? "normal" : "presentation"
+    })
+      .then((response) => {
+        if (!active) return;
+        setBookletPreview({
+          ...pdfFile,
+          name: `${pdfFile.name} — ${layout.pageLayout === "booklet" ? "Normal Booklet" : "Presentation Booklet"}`,
+          path: response.path,
+          previewUrl: convertFileSrc(response.path)
+        });
+        setBookletSheetSideCount(response.sheetSideCount);
+      })
+      .catch((error) => {
+        if (active) setBookletError(friendlyError(error));
+      })
+      .finally(() => {
+        if (active) setIsPreparingBooklet(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    isCustomBooklet,
+    layout.pageLayout,
+    layout.pinGuideCount,
+    pdfFile,
+    printPaperPreview?.heightPt,
+    printPaperPreview?.widthPt
+  ]);
 
   // Keep the latest values available to the global keyboard-shortcut listener
   // without re-subscribing on every render.
@@ -519,6 +601,35 @@ export default function App() {
 
     setIsPrinting(true);
 
+    const pageSelection = isCustomBooklet
+      ? {
+          ok: true as const,
+          pages: Array.from({ length: bookletSheetSideCount }, (_, index) => index + 1),
+          normalized: ""
+        }
+      : validatePageSelection({
+          mode: settings.pageSelectionMode || "all",
+          value: settings.pageSelection || "",
+          currentPage: currentPdfPage,
+          pageCount: documentPageCount || 0
+        });
+    if (!pageSelection.ok) {
+      setIsPrinting(false);
+      notify({ type: "info", severity: "error", title: "Page selection invalid", message: pageSelection.error || "Choose valid pages before printing." });
+      return;
+    }
+
+    const printSettings: PrintSettings = {
+      ...settings,
+      normalizedPageSelection: pageSelection.normalized,
+      duplex: isCustomBooklet ? "PresentationBooklet" : settings.duplex,
+      scaleMode: isCustomBooklet ? "actual" : layout.scaleMode,
+      customScalePercent: isCustomBooklet ? 100 : layout.customScalePercent,
+      marginMode: isCustomBooklet ? "default" : layout.marginMode,
+      customMarginsMm: layout.customMarginsMm || { top: layout.customMarginMm, right: layout.customMarginMm, bottom: layout.customMarginMm, left: layout.customMarginMm },
+      align: layout.align
+    };
+
     const historyBase = {
       id: `${Date.now()}-${pdfFile.name}`,
       fileName: pdfFile.name,
@@ -534,13 +645,13 @@ export default function App() {
       // source of truth and performs the actual (unchanged) submission internally.
       const job = await jobManager.print({
         documentName: pdfFile.name,
-        documentPath: pdfFile.path,
+        documentPath: isCustomBooklet ? bookletPreview?.path || pdfFile.path : pdfFile.path,
         printerId: settings.printerId,
         printerName: selectedPrinter?.name || settings.printerId || "Not selected",
-        settings,
-        totalPages: documentPageCount || 1,
+        settings: printSettings,
+        totalPages: pageSelection.pages.length || documentPageCount || 1,
         paperSize: printPaperPreview?.label || settings.paperSize || "Default",
-        orientation: layout.orientation
+        orientation: isCustomBooklet ? "landscape" : layout.orientation
       });
 
       if (job.status === "completed") {
@@ -700,14 +811,18 @@ export default function App() {
         >
           <div className="min-h-0 min-w-0">
             <PdfPreview
-              file={pdfFile}
+              file={previewFile}
               printPaper={printPaperPreview}
-              layout={layout}
+              layout={previewLayout}
               printerName={selectedPrinter?.name}
               recentFiles={recentFiles}
               onBrowse={browsePdf}
               onOpenRecent={selectPdfPath}
-              onPageCount={setDocumentPageCount}
+              onPageCount={(count) => {
+                if (isCustomBooklet) setBookletSheetSideCount(count);
+                else setDocumentPageCount(count);
+              }}
+              onCurrentPageChange={setCurrentPdfPage}
             />
           </div>
 
@@ -735,6 +850,8 @@ export default function App() {
               canPrint={canPrint}
               isPrinting={isPrinting}
               printDisabledReason={printDisabledReason}
+              pageCount={documentPageCount}
+              currentPage={currentPdfPage}
               onRefresh={() => loadPrinters(true)}
               onOpenPrinterDashboard={() => setIsPrinterDashboardOpen(true)}
               onApplyProfile={applyProfile}

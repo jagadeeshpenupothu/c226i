@@ -1,4 +1,4 @@
-import type { CloudDocument, CloudDocumentLibrarySnapshot, CloudQuotaSnapshot, CloudReservationResult } from "./documentTypes";
+import type { CloudDocument, CloudDocumentLibrarySnapshot, CloudQuotaSnapshot, CloudReservationResult, PdfValidationResult } from "./documentTypes";
 
 export interface CloudDocumentProvider {
   listDocuments(ownerUid: string): Promise<CloudDocumentLibrarySnapshot>;
@@ -16,6 +16,12 @@ export interface CloudDocumentProvider {
     file: Blob;
     onProgress: (progress: number) => void;
   }): Promise<void>;
+  uploadLocalPdf?(input: {
+    documentId: string;
+    path: string;
+    byteSize: number;
+    onProgress: (progress: number) => void;
+  }): Promise<void>;
   finalizeUpload(input: {
     ownerUid: string;
     documentId: string;
@@ -23,6 +29,9 @@ export interface CloudDocumentProvider {
     sha256: string;
     byteSize: number;
   }): Promise<CloudDocument>;
+  downloadToCache?(document: CloudDocument): Promise<PdfValidationResult>;
+  getStatus?(ownerUid: string, documentId: string): Promise<{ document: CloudDocument; upload: { status: string } | null; quota: CloudQuotaSnapshot }>;
+  abandonUpload?(ownerUid: string, documentId: string): Promise<void>;
   getDownloadUrl(document: CloudDocument): Promise<string>;
   markOpened(ownerUid: string, documentId: string): Promise<void>;
   deleteDocument(ownerUid: string, document: CloudDocument): Promise<void>;

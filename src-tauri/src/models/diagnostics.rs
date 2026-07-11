@@ -101,4 +101,3 @@ pub struct PrinterDiagnosticSnapshot {
 pub struct DiagnosticExportResponse {
     pub path: String,
 }
-

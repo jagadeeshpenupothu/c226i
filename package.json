@@ -1,6 +1,6 @@
 {
   "name": "printpilot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:mac": "tauri build --target universal-apple-darwin",
+    "release:check-config": "node scripts/verify-release-config.mjs --source-safety",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "firebase:deploy:staging:rules": "node scripts/firebase-deploy.mjs staging firestore:rules,storage",
     "firebase:deploy:staging:indexes": "node scripts/firebase-deploy.mjs staging firestore:indexes",

@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Cloud, LogIn, LogOut, UserPlus } from "lucide-react";
+import { Cloud, HardDrive, LogIn, LogOut, Unplug, UserPlus } from "lucide-react";
 import { Button, IconButton, typography } from "@/design";
 import { cn } from "@/lib/utils";
 import { cloudManager } from "../cloudManager";
 import { useCloudUser } from "../hooks/useCloud";
 import type { CloudUser } from "../cloudTypes";
 import { CLOUD_USER_QUOTA_BYTES, formatBytes } from "../documents/constants";
+import {
+  connectGoogleDrive,
+  disconnectGoogleDrive,
+  getGoogleDriveConnectionState,
+  readGoogleDriveConnectionConfig,
+  type GoogleDriveConnectionState
+} from "../providers/googleDriveConnectionBridge";
 
 type AuthMode = "signin" | "signup";
 
@@ -19,6 +26,9 @@ export function AccountMenu({ onOpenCloudDocuments }: { onOpenCloudDocuments?: (
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<{ usedBytes: number; quotaBytes: number } | null>(null);
+  const [driveState, setDriveState] = useState<GoogleDriveConnectionState | null>(null);
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [driveError, setDriveError] = useState<string | null>(null);
   const anchorRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ right: number; top: number } | null>(null);
@@ -48,6 +58,28 @@ export function AccountMenu({ onOpenCloudDocuments }: { onOpenCloudDocuments?: (
     });
   }, [open, user]);
 
+  useEffect(() => {
+    if (!open || !user) return;
+    const config = readGoogleDriveConnectionConfig();
+    if (!config) return;
+    let active = true;
+    setDriveBusy(true);
+    setDriveError(null);
+    getGoogleDriveConnectionState(user.id, config)
+      .then((state) => {
+        if (active) setDriveState(state);
+      })
+      .catch((reason: unknown) => {
+        if (active) setDriveError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (active) setDriveBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, user]);
+
   function toggle() {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (rect) setPos({ right: window.innerWidth - rect.right, top: rect.bottom + 6 });
@@ -74,6 +106,39 @@ export function AccountMenu({ onOpenCloudDocuments }: { onOpenCloudDocuments?: (
     await cloudManager.signOut();
     setBusy(false);
     setOpen(false);
+  }
+
+  async function handleDriveConnect() {
+    if (!user) return;
+    const config = readGoogleDriveConnectionConfig();
+    if (!config) {
+      setDriveError("Google Drive is not configured.");
+      return;
+    }
+    setDriveBusy(true);
+    setDriveError(null);
+    try {
+      setDriveState(await connectGoogleDrive(user.id, config));
+    } catch (reason) {
+      setDriveError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+
+  async function handleDriveDisconnect() {
+    if (!user) return;
+    const config = readGoogleDriveConnectionConfig();
+    if (!config) return;
+    setDriveBusy(true);
+    setDriveError(null);
+    try {
+      setDriveState(await disconnectGoogleDrive(user.id, config));
+    } catch (reason) {
+      setDriveError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDriveBusy(false);
+    }
   }
 
   return (
@@ -105,6 +170,24 @@ export function AccountMenu({ onOpenCloudDocuments }: { onOpenCloudDocuments?: (
                 <Button variant="secondary" size="sm" leadingIcon={Cloud} onClick={() => { setOpen(false); onOpenCloudDocuments?.(); }}>
                   Cloud Documents
                 </Button>
+              </div>
+              <div className="grid gap-2 border-t border-edge-subtle px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className={cn(typography.caption, "text-ink-muted")}>Google Drive</span>
+                  <span className={cn(typography.caption, driveState?.connected ? "text-success" : "text-ink-muted")}>
+                    {driveBusy ? "Checking..." : driveState?.connected ? "Connected" : "Not connected"}
+                  </span>
+                </div>
+                {driveState?.connected ? (
+                  <Button variant="secondary" size="sm" leadingIcon={Unplug} loading={driveBusy} onClick={() => void handleDriveDisconnect()}>
+                    Disconnect Google Drive
+                  </Button>
+                ) : (
+                  <Button variant="secondary" size="sm" leadingIcon={HardDrive} loading={driveBusy} onClick={() => void handleDriveConnect()}>
+                    Connect Google Drive
+                  </Button>
+                )}
+                {driveError && <p className={cn(typography.caption, "text-error")}>{driveError}</p>}
               </div>
               <div className="border-t border-edge-subtle p-2">
                 <Button variant="secondary" size="sm" className="w-full" leadingIcon={LogOut} loading={busy} onClick={handleSignOut}>

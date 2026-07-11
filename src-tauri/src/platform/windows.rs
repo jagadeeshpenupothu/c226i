@@ -137,6 +137,15 @@ pub fn printer_capabilities(printer_id: &str) -> Result<PrinterCapabilities, Str
 
 pub fn print_pdf(request: &PrintRequest) -> Result<PrintResponse, String> {
     let settings: &PrintSettings = &request.settings;
+    if !settings.normalized_page_selection.trim().is_empty() {
+        return Err("Page selection requires the macOS/Linux CUPS backend in this build.".to_string());
+    }
+    if matches!(settings.scale_mode.as_str(), "actual" | "custom")
+        || matches!(settings.margin_mode.as_str(), "none" | "custom")
+        || (!settings.align.is_empty() && settings.align != "center")
+    {
+        return Err("This Windows print path cannot safely honor scaling, custom margins, or position without PDF transformation.".to_string());
+    }
 
     let mut script = String::from("$ErrorActionPreference='Stop'; $name=");
     script.push_str(&ps_single_quote(&settings.printer_id));

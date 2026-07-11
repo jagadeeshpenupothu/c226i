@@ -4,6 +4,13 @@ import { DefaultConflictResolver, type ConflictResolver, type ConflictStrategy }
 import { networkMonitor, type NetworkStatus } from "./network/networkMonitor";
 import { syncQueue, type EnqueueInput } from "./queue/syncQueue";
 import type { CloudProvider } from "./providers/cloudProvider";
+import {
+  downloadGoogleDrivePdfToCache,
+  getGoogleDriveConnectionState,
+  listGoogleDriveDocuments,
+  readGoogleDriveConnectionConfig,
+  trashGoogleDriveDocument
+} from "./providers/googleDriveConnectionBridge";
 import type { AuthMethod } from "./auth/authTypes";
 import type { EmailPasswordCredentials } from "./auth/authTypes";
 import type { SyncOperation, SyncStatus } from "./sync/syncTypes";
@@ -183,6 +190,14 @@ class CloudManager {
   async listCloudDocuments(): Promise<CloudResult<CloudDocumentLibrarySnapshot>> {
     const { user } = cloudStore.getSnapshot();
     if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to view cloud documents." } };
+    const drive = await this.googleDriveAvailable(user.id);
+    if (drive) {
+      try {
+        return { ok: true, value: await listGoogleDriveDocuments(user.id, drive) };
+      } catch (error) {
+        return { ok: false, error: toCloudError(error) };
+      }
+    }
     if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud documents are not configured." } };
     try {
       return { ok: true, value: await this.provider.documents.listDocuments(user.id) };
@@ -194,6 +209,14 @@ class CloudManager {
   async getCloudStorageUsage(): Promise<CloudResult<CloudDocumentLibrarySnapshot["quota"]>> {
     const { user } = cloudStore.getSnapshot();
     if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to view storage usage." } };
+    const drive = await this.googleDriveAvailable(user.id);
+    if (drive) {
+      try {
+        return { ok: true, value: (await listGoogleDriveDocuments(user.id, drive)).quota };
+      } catch (error) {
+        return { ok: false, error: toCloudError(error) };
+      }
+    }
     if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud storage is not configured." } };
     try {
       return { ok: true, value: await this.provider.documents.getStorageUsage(user.id) };
@@ -223,6 +246,21 @@ class CloudManager {
     }
   }
 
+  async uploadCloudLocalPdf(input: {
+    documentId: string;
+    path: string;
+    byteSize: number;
+    onProgress: (progress: number) => void;
+  }): Promise<CloudResult<void>> {
+    if (!this.provider?.documents?.uploadLocalPdf) return { ok: false, error: { code: "not-implemented", message: "Local cloud PDF upload is not available for this provider." } };
+    try {
+      await this.provider.documents.uploadLocalPdf(input);
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
   async finalizeCloudUpload(input: Omit<Parameters<NonNullable<CloudProvider["documents"]>["finalizeUpload"]>[0], "ownerUid">): Promise<CloudResult<CloudDocument>> {
     const { user } = cloudStore.getSnapshot();
     if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to archive PDFs." } };
@@ -243,6 +281,28 @@ class CloudManager {
     }
   }
 
+  async downloadCloudDocumentToCache(document: CloudDocument): Promise<CloudResult<{ path: string; previewUrl: string }>> {
+    const { user } = cloudStore.getSnapshot();
+    if (user) {
+      const drive = await this.googleDriveAvailable(user.id);
+      if (drive) {
+        try {
+          const cached = await downloadGoogleDrivePdfToCache({ firebaseUid: user.id, config: drive, document });
+          return { ok: true, value: { path: cached.path, previewUrl: "" } };
+        } catch (error) {
+          return { ok: false, error: toCloudError(error) };
+        }
+      }
+    }
+    if (!this.provider?.documents?.downloadToCache) return { ok: false, error: { code: "not-implemented", message: "Authenticated cloud download is not available for this provider." } };
+    try {
+      const cached = await this.provider.documents.downloadToCache(document);
+      return { ok: true, value: { path: cached.path, previewUrl: "" } };
+    } catch (error) {
+      return { ok: false, error: toCloudError(error) };
+    }
+  }
+
   async markCloudDocumentOpened(documentId: string): Promise<void> {
     const { user } = cloudStore.getSnapshot();
     if (!user || !this.provider?.documents) return;
@@ -256,6 +316,15 @@ class CloudManager {
   async deleteCloudDocument(document: CloudDocument): Promise<CloudResult<void>> {
     const { user } = cloudStore.getSnapshot();
     if (!user) return { ok: false, error: { code: "unauthenticated", message: "Sign in to delete cloud documents." } };
+    const drive = await this.googleDriveAvailable(user.id);
+    if (drive) {
+      try {
+        await trashGoogleDriveDocument({ firebaseUid: user.id, config: drive, document });
+        return { ok: true, value: undefined };
+      } catch (error) {
+        return { ok: false, error: toCloudError(error) };
+      }
+    }
     if (!this.provider?.documents) return { ok: false, error: { code: "not-configured", message: "Cloud archive service is not configured." } };
     try {
       await this.provider.documents.deleteDocument(user.id, document);
@@ -301,6 +370,17 @@ class CloudManager {
     if (syncQueue.isPaused()) return "waiting";
     if (pending > 0) return "waiting";
     return "idle";
+  }
+
+  private async googleDriveAvailable(userId: string) {
+    const config = readGoogleDriveConnectionConfig();
+    if (!config) return null;
+    try {
+      const state = await getGoogleDriveConnectionState(userId, config);
+      return state.connected ? config : null;
+    } catch {
+      return null;
+    }
   }
 }
 

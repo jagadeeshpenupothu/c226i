@@ -12,5 +12,10 @@ export interface PrintResponse {
 }
 
 export function submitPrintJob(request: PrintRequest) {
-  return safeInvoke<PrintResponse>("print_pdf", { request });
+  const settings = { ...request.settings };
+  delete settings.pageSelectionMode;
+  delete settings.pageSelection;
+  return safeInvoke<PrintResponse>("print_pdf", {
+    request: { ...request, settings }
+  });
 }

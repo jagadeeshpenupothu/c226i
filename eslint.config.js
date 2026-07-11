@@ -37,5 +37,27 @@ export default tseslint.config(
         process: "readonly"
       }
     }
+  },
+  {
+    files: ["cloudflare/**/*.js", "cloudflare/**/*.mjs"],
+    ignores: ["cloudflare/node_modules/**"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: {
+        atob: "readonly",
+        Blob: "readonly",
+        Buffer: "readonly",
+        console: "readonly",
+        crypto: "readonly",
+        fetch: "readonly",
+        Headers: "readonly",
+        process: "readonly",
+        Request: "readonly",
+        Response: "readonly",
+        TextDecoder: "readonly",
+        TextEncoder: "readonly",
+        URL: "readonly"
+      }
+    }
   }
 );

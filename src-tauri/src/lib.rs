@@ -1,5 +1,7 @@
 mod commands;
+mod booklet;
 mod diagnostics;
+mod google_drive;
 mod models;
 mod platform;
 
@@ -38,7 +40,17 @@ pub fn run() {
             commands::validate_pdf_for_cloud,
             commands::resolve_cloud_pdf_cache_path,
             commands::download_cloud_pdf_to_cache,
+            commands::upload_cloudflare_pdf_part,
+            commands::download_cloudflare_pdf_to_cache,
             commands::remove_cloud_cached_pdf,
+            commands::connect_google_drive,
+            commands::get_google_drive_connection_state,
+            commands::disconnect_google_drive,
+            commands::archive_google_drive_pdf,
+            commands::list_google_drive_documents,
+            commands::download_google_drive_pdf_to_cache,
+            commands::trash_google_drive_document,
+            commands::create_presentation_booklet,
             commands::print_pdf,
             commands::capture_diagnostic_snapshot,
             commands::export_diagnostic_snapshot

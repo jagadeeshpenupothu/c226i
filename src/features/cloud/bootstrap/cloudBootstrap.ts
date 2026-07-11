@@ -1,5 +1,6 @@
 import { cloudManager } from "../cloudManager";
 import { FirebaseProvider, type FirebaseConfig } from "../providers/firebaseProvider";
+import { CloudflareArchiveProvider, type CloudflareArchiveConfig } from "../providers/cloudflareArchiveProvider";
 
 // Cloud composition root.
 //
@@ -31,6 +32,12 @@ function readFirebaseConfig(): FirebaseConfig | null {
   return config;
 }
 
+function readCloudflareArchiveConfig(): CloudflareArchiveConfig | null {
+  const workerBaseUrl = import.meta.env.VITE_CLOUDFLARE_ARCHIVE_URL;
+  if (!workerBaseUrl || workerBaseUrl.trim().length === 0) return null;
+  return { workerBaseUrl };
+}
+
 // Bootstraps the cloud layer. Always safe to call: with no/invalid config it
 // starts the local-first cloud layer (network monitor + state) without any
 // provider, so the app behaves exactly as before. Returns a cleanup function
@@ -41,7 +48,13 @@ export function bootstrapCloud(): () => void {
   try {
     const config = readFirebaseConfig();
     if (config) {
-      cloudManager.registerProvider(new FirebaseProvider(config));
+      const firebaseProvider = new FirebaseProvider(config);
+      const cloudflareConfig = readCloudflareArchiveConfig();
+      cloudManager.registerProvider(
+        cloudflareConfig
+          ? new CloudflareArchiveProvider(firebaseProvider, cloudflareConfig)
+          : firebaseProvider
+      );
     } else if (import.meta.env.DEV) {
       console.info("[cloud] Firebase is not configured (VITE_FIREBASE_*) — running local-only.");
     }

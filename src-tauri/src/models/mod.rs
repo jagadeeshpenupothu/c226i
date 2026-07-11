@@ -1,15 +1,21 @@
+mod cloud_document;
+mod diagnostics;
 mod print;
 mod printer;
-mod diagnostics;
-mod cloud_document;
 
-pub use print::{PdfFileMetadata, PrintRequest, PrintResponse, PrintSettings};
-pub use printer::{
-    CapabilityChoice, ParsedOption, PrinterCapabilities, PrinterInfo, PrinterStatus,
+pub use cloud_document::{
+    CloudCacheWriteResponse, CloudflarePdfDownloadRequest, CloudflarePdfPartUploadRequest,
+    CloudflarePdfPartUploadResponse, PdfValidationResponse,
 };
 pub use diagnostics::{
     CommandExecutionRecord, DiagnosticExportResponse, HostPrintingEnvironment,
-    PrinterCapabilitySnapshot, PrinterDiagnosticIdentity, PrinterDiagnosticSnapshot, QueueJobSnapshot,
-    QueueSnapshot, RawCupsData,
+    PrinterCapabilitySnapshot, PrinterDiagnosticIdentity, PrinterDiagnosticSnapshot,
+    QueueJobSnapshot, QueueSnapshot, RawCupsData,
 };
-pub use cloud_document::{CloudCacheWriteResponse, PdfValidationResponse};
+pub use print::{
+    BookletImpositionMode, PdfFileMetadata, PresentationBookletRequest,
+    PresentationBookletResponse, PrintRequest, PrintResponse, PrintSettings,
+};
+pub use printer::{
+    CapabilityChoice, ParsedOption, PrinterCapabilities, PrinterInfo, PrinterStatus,
+};

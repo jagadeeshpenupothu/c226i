@@ -183,6 +183,7 @@ export function roadmapNotice(layout: PrintLayout): string | null {
   const labels: Record<Exclude<PrintLayout["pageLayout"], "single">, string> = {
     "n-up": "N-Up",
     booklet: "Booklet",
+    "presentation-booklet": "Presentation Booklet",
     poster: "Poster",
     "book-fold": "Book Fold"
   };

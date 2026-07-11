@@ -22,10 +22,12 @@ interface PdfPreviewProps {
   onOpenRecent?: (path: string) => void;
   /** Reports the loaded document's page count (0 when none) for the header. */
   onPageCount?: (pageCount: number) => void;
+  onCurrentPageChange?: (page: number) => void;
 }
 
-export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayout, printerName, recentFiles, onBrowse, onOpenRecent, onPageCount }: PdfPreviewProps) {
+export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayout, printerName, recentFiles, onBrowse, onOpenRecent, onPageCount, onCurrentPageChange }: PdfPreviewProps) {
   const { document, pageCount, firstPage, fileSizeBytes, progress, isLoading, error } = usePdfDocument(file);
+  const documentIdentity = file?.path || file?.previewUrl || "pdf";
   // `null` shows the document overview (thumbnail grid); a page number opens the
   // detailed page viewer at that page.
   const [detailPage, setDetailPage] = useState<number | null>(null);
@@ -35,6 +37,9 @@ export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayou
   useEffect(() => {
     onPageCount?.(document ? pageCount : 0);
   }, [document, pageCount, onPageCount]);
+  useEffect(() => {
+    onCurrentPageChange?.(detailPage || 1);
+  }, [detailPage, onCurrentPageChange]);
 
   // A newly loaded document always starts on the overview.
   useEffect(() => {
@@ -92,6 +97,7 @@ export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayou
         (detailPage === null ? (
           <PdfDocumentOverview
             file={file}
+            documentIdentity={documentIdentity}
             document={document}
             pageCount={pageCount}
             firstPage={firstPage}
@@ -99,7 +105,10 @@ export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayou
             printPaper={printPaper}
             layout={layout}
             printerName={printerName}
-            onOpenPage={setDetailPage}
+            onOpenPage={(page) => {
+              onCurrentPageChange?.(page);
+              setDetailPage(page);
+            }}
           />
         ) : (
           <PdfDetailPreview
@@ -112,6 +121,7 @@ export function PdfPreview({ file, printPaper = null, layout = defaultPrintLayou
             layout={layout}
             initialPage={detailPage}
             onBack={() => setDetailPage(null)}
+            onCurrentPageChange={onCurrentPageChange}
           />
         ))}
     </div>

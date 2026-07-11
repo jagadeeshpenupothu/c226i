@@ -10,7 +10,7 @@ import type { SyncState, SyncStatus } from "./sync/syncTypes";
 import type { NetworkStatus } from "./network/networkMonitor";
 
 // Which cloud backend owns an identity / provides sync + storage.
-export type CloudProviderId = "firebase" | "supabase" | "appwrite" | "azure" | "custom";
+export type CloudProviderId = "firebase" | "cloudflare" | "supabase" | "appwrite" | "azure" | "custom";
 
 export type SubscriptionTier = "free" | "pro" | "team" | "enterprise";
 

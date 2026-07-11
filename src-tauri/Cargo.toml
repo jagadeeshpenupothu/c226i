@@ -1,6 +1,6 @@
 [package]
 name = "printpilot"
-version = "0.1.0"
+version = "1.0.0"
 description = "PrintPilot for macOS"
 authors = ["PrintPilot"]
 edition = "2021"
@@ -21,8 +21,19 @@ thiserror = "1"
 time = "=0.3.44"
 sha2 = "0.10"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+lopdf = "0.34"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
+keyring = { version = "3", features = ["apple-native"] }
 objc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }

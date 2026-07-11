@@ -249,7 +249,10 @@ export default function App() {
   // A printer's reported media list when available; a built-in standard list
   // otherwise, so paper size / preview stay usable with no printer connected.
   const paperChoices = capabilities?.paperSizes?.length ? capabilities.paperSizes : FALLBACK_PAPER_CHOICES;
-  const printPaperPreview = resolvePrintPaperPreview(settings, paperChoices);
+  const printPaperPreview = useMemo(
+    () => resolvePrintPaperPreview(settings, paperChoices),
+    [paperChoices, settings]
+  );
   const isCustomBooklet = layout.pageLayout === "presentation-booklet" || layout.pageLayout === "booklet";
   const previewFile = isCustomBooklet ? bookletPreview || pdfFile : pdfFile;
   const previewLayout = isCustomBooklet
@@ -340,8 +343,7 @@ export default function App() {
     layout.pageLayout,
     layout.pinGuideCount,
     pdfFile,
-    printPaperPreview?.heightPt,
-    printPaperPreview?.widthPt
+    printPaperPreview
   ]);
 
   // Keep the latest values available to the global keyboard-shortcut listener
